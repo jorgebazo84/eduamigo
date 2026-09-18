@@ -1,0 +1,37 @@
+@import "tailwindcss";
+
+body {
+  font-family: 'Quicksand', sans-serif;
+  background-color: #f0f9ff;
+  color: #1e3a8a;
+}
+
+.glass-card {
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+/* Identidad EWOLA J21 Suavizada */
+.text-ewola { color: #00B4D8; }
+.bg-ewola { background-color: #00B4D8; }
+.border-ewola { border-color: #00B4D8; }
+
+/* Scrollbar personalizada para un look más tech */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+}
+::-webkit-scrollbar-thumb {
+  background: #00B4D8;
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #0077b6;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
