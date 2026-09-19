@@ -2,6 +2,7 @@
 
 Todas las modificaciones, mejoras de funcionalidad, parches de seguridad y correcciones del proyecto EduAmigo quedan registradas en este documento siguiendo el estándar de versionado semántico [SemVer](https://semver.org/).
 
+
 ---
 
 ## [1.1.0] - 2026-09-19 — Reconocimiento de Voz en Vivo y Modo Offline
