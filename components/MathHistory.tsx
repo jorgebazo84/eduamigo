@@ -123,7 +123,7 @@ const MathHistory: React.FC<MathHistoryProps> = ({ userId, childId }) => {
                       🧠 Análisis del Tutor
                     </h5>
                     <p className="text-sm text-slate-600 leading-relaxed italic">
-                      {selectedSession.analysis.feedback}
+                      {selectedSession.analysis.generalFeedback || (selectedSession.analysis as any).feedback}
                     </p>
                   </div>
 
@@ -152,7 +152,7 @@ const MathHistory: React.FC<MathHistoryProps> = ({ userId, childId }) => {
                   {selectedSession.analysis.suggestedExercises.map((ex, i) => (
                     <div key={i} className="bg-white p-4 rounded-xl border border-orange-100 shadow-sm">
                       <h6 className="font-bold text-orange-900 text-xs mb-1">{ex.title}</h6>
-                      <p className="text-[10px] text-slate-500">{ex.description}</p>
+                      <p className="text-[10px] text-slate-500">{ex.problem || (ex as any).description}</p>
                     </div>
                   ))}
                 </div>

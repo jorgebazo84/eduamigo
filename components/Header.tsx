@@ -1,6 +1,7 @@
 
 import React from 'react';
 import { ViewMode, UserRole, Child } from '../types';
+import { PWAInstallButton } from './PWAInstallButton';
 
 interface HeaderProps {
   viewMode: ViewMode;
@@ -103,6 +104,7 @@ const Header: React.FC<HeaderProps> = ({ viewMode, setViewMode, userRole, active
       </div>
 
       <div className="flex items-center gap-2">
+        <PWAInstallButton />
         {activeChild && (
           <div className="hidden lg:flex items-center gap-3 bg-white px-4 py-2 rounded-2xl shadow-sm border border-blue-50">
             <span className="text-2xl">{activeChild.avatar}</span>

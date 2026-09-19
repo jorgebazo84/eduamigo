@@ -33,6 +33,32 @@ import { srsService } from './services/srsService';
 import DailyStudyRecorder from './components/DailyStudyRecorder';
 import ReviewTaskModule from './components/ReviewTaskModule';
 import EnglishModule from './components/english/EnglishModule';
+import { APP_VERSION, APP_YEAR } from './version';
+import { OfflineStatusBanner } from './components/OfflineStatusBanner';
+import { offlineStorageService } from './services/offlineStorageService';
+
+// Helper de almacenamiento seguro para entornos iframe / sandbox
+const safeStorage = {
+  getItem: (key: string): string | null => {
+    try {
+      return sessionStorage.getItem(key) || localStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  },
+  setItem: (key: string, value: string): void => {
+    try { sessionStorage.setItem(key, value); } catch {}
+    try { localStorage.setItem(key, value); } catch {}
+  },
+  removeItem: (key: string): void => {
+    try { sessionStorage.removeItem(key); } catch {}
+    try { localStorage.removeItem(key); } catch {}
+  },
+  clear: (): void => {
+    try { sessionStorage.clear(); } catch {}
+    try { localStorage.clear(); } catch {}
+  }
+};
 
 const App: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -150,18 +176,25 @@ const App: React.FC = () => {
       if (data.quickNotes) setQuickNotes(data.quickNotes);
       if (data.aiCorrections) setAiCorrections(data.aiCorrections);
       if (data.academicGrades) setAcademicGrades(data.academicGrades);
-      if (data.books) setBooks(data.books);
+      if (data.books) {
+        setBooks(data.books);
+        offlineStorageService.cacheBooks(data.books);
+      }
       if (data.dailyReports) setDailyReports(data.dailyReports);
       if (data.reviewPlans) setReviewPlans(data.reviewPlans);
     } catch (e) { 
       console.error("Error cargando datos:", e);
+      const cachedBooks = offlineStorageService.getCachedBooks();
+      if (cachedBooks && cachedBooks.length > 0) {
+        setBooks(cachedBooks);
+      }
     }
   };
 
   useEffect(() => {
-    const savedId = sessionStorage.getItem('eduamigo_userId');
-    const savedPin = sessionStorage.getItem('eduamigo_pin');
-    const savedRole = sessionStorage.getItem('eduamigo_role') as UserRole;
+    const savedId = safeStorage.getItem('eduamigo_userId');
+    const savedPin = safeStorage.getItem('eduamigo_pin');
+    const savedRole = safeStorage.getItem('eduamigo_role') as UserRole;
 
     if (savedRole === 'demo') {
       setUserRole('demo');
@@ -174,8 +207,8 @@ const App: React.FC = () => {
       setIsAuthenticated(true);
       loadServerData(savedId);
     }
-    setRegion(localStorage.getItem('eduamigo_region') as Region || 'Madrid');
-    requestNotificationPermission();
+    setRegion(safeStorage.getItem('eduamigo_region') as Region || 'Madrid');
+    requestNotificationPermission().catch(() => {});
   }, []);
 
   const handleUpdateRewards = async (newRewards: Reward[]) => {
@@ -289,9 +322,9 @@ const App: React.FC = () => {
     setUserId(uid);
     setParentPin(pin);
     setUserRole('parent');
-    sessionStorage.setItem('eduamigo_userId', uid);
-    sessionStorage.setItem('eduamigo_pin', pin);
-    sessionStorage.setItem('eduamigo_role', 'parent');
+    safeStorage.setItem('eduamigo_userId', uid);
+    safeStorage.setItem('eduamigo_pin', pin);
+    safeStorage.setItem('eduamigo_role', 'parent');
     setIsAuthenticated(true);
     showToast("¡Bienvenido al Aula Virtual!", "success");
     loadServerData(uid);
@@ -300,7 +333,7 @@ const App: React.FC = () => {
   const handleDemoMode = () => {
     setUserRole('demo');
     setIsAuthenticated(true);
-    sessionStorage.setItem('eduamigo_role', 'demo');
+    safeStorage.setItem('eduamigo_role', 'demo');
     loadDemoData();
     showToast("Modo Invitado Activo.", "info");
   };
@@ -394,18 +427,47 @@ const App: React.FC = () => {
       if (existing) {
         return prev.map(s => s.childId === childId ? { ...s, isTracking: !s.isTracking } : s);
       }
-      return [...prev, { childId, isTracking: true, currentPath: [], lastUpdate: Date.now() }];
+      const newLoc: LocationState = {
+        childId,
+        isTracking: true,
+        currentCoord: null,
+        history: [],
+        deviationHistory: [],
+        homeCoord: null,
+        schoolCoord: null,
+        safeRadius: 200,
+        routePath: [],
+        destination: null,
+        groundingUrls: []
+      };
+      return [...prev, newLoc];
     });
   };
 
   const handleSetLocationPoint = (childId: string, type: 'home' | 'school', coord: Coordinate, address?: string) => {
     setLocationStates(prev => {
       const existing = prev.find(s => s.childId === childId);
-      const update = type === 'home' ? { homePoint: { coord, address } } : { schoolPoint: { coord, address } };
+      const update = type === 'home' 
+        ? { homeCoord: coord, homeAddress: address } 
+        : { schoolCoord: coord, schoolAddress: address };
       if (existing) {
         return prev.map(s => s.childId === childId ? { ...s, ...update } : s);
       }
-      return [...prev, { childId, isTracking: false, currentPath: [], lastUpdate: Date.now(), ...update }];
+      const newLoc: LocationState = {
+        childId,
+        isTracking: false,
+        currentCoord: null,
+        history: [],
+        deviationHistory: [],
+        homeCoord: null,
+        schoolCoord: null,
+        safeRadius: 200,
+        routePath: [],
+        destination: null,
+        groundingUrls: [],
+        ...update
+      };
+      return [...prev, newLoc];
     });
   };
 
@@ -593,7 +655,7 @@ const App: React.FC = () => {
 
   const handleLogout = () => {
     setIsAuthenticated(false);
-    sessionStorage.clear();
+    safeStorage.clear();
     setUserId(null);
     setUserRole(null);
     setChildren([]);
@@ -623,6 +685,7 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen flex flex-col md:flex-row bg-[#f0f9ff]">
+      <OfflineStatusBanner />
       {toast && (
         <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[200] bg-white shadow-2xl px-6 py-3 rounded-full border border-blue-100 text-xs font-black animate-in slide-in-from-top duration-300 flex items-center gap-2">
           <div className={`w-2 h-2 rounded-full ${toast.type === 'success' ? 'bg-green-500' : 'bg-blue-500'}`}></div>
@@ -691,7 +754,7 @@ const App: React.FC = () => {
             <div className="space-y-8">
               {activeChildId && (
                 <StudyModuleContainer 
-                  userId={userId || localStorage.getItem('eduamigo_user_id') || 'demo'}
+                  userId={userId || safeStorage.getItem('eduamigo_user_id') || 'demo'}
                   childId={activeChildId || 'demo'}
                   userRole={userRole} 
                   grade={activeChild?.grade || '1º Primaria'}
@@ -839,9 +902,9 @@ const App: React.FC = () => {
                  <span className="font-black text-xs text-blue-900 tracking-tighter">EWOLA</span>
                  <span className="font-black text-xs text-[#00B4D8] tracking-tighter">J21</span>
               </div>
-              <span className="bg-[#00B4D8] text-[#001220] px-1.5 py-0.5 rounded text-[8px] font-black">V.1.0.1</span>
+              <span className="bg-[#00B4D8] text-[#001220] px-1.5 py-0.5 rounded text-[8px] font-black">V.{APP_VERSION}</span>
            </div>
-           <p className="text-[8px] font-bold text-blue-400">TECHNOLOGY FOR EDUCATION PLATFORM • 2025</p>
+           <p className="text-[8px] font-bold text-blue-400">TECHNOLOGY FOR EDUCATION PLATFORM • {APP_YEAR}</p>
            {userRole === 'demo' && (
              <button onClick={handleLogout} className="mt-4 text-[10px] font-black text-blue-600 hover:underline">
                SALIR DEL MODO DEMOSTRACIÓN

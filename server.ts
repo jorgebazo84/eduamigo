@@ -5,7 +5,6 @@ import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import Database from 'better-sqlite3';
-import mysql from 'mysql2/promise';
 import pg from 'pg';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
@@ -22,36 +21,13 @@ async function startServer() {
   
   // Detect DB type automatically if not specified
   const pgConnString = process.env.DATABASE_URL || process.env.SUPABASE_DB_URL || process.env.POSTGRES_URL;
-  const DB_TYPE = process.env.DB_TYPE || (pgConnString ? 'postgres' : (process.env.MYSQL_HOST ? 'mysql' : 'sqlite'));
-  console.log(`[DB] Using database type: ${DB_TYPE}`);
+  const DB_TYPE = pgConnString ? 'postgres' : 'sqlite';
+  console.log(`[DB] Using database mode: ${DB_TYPE}`);
   
   let db: any;
-  let mysqlPool: mysql.Pool | null = null;
   let pgPool: pg.Pool | null = null;
 
-  // Try to load config from public/config.php if it exists
-  let phpConfig: any = {};
-  const configPhpPath = path.join(process.cwd(), 'public', 'config.php');
-  if (fs.existsSync(configPhpPath)) {
-    try {
-      const content = fs.readFileSync(configPhpPath, 'utf8');
-      const hostMatch = content.match(/define\('DB_HOST',\s*'([^']+)'\)/);
-      const nameMatch = content.match(/define\('DB_NAME',\s*'([^']+)'\)/);
-      const userMatch = content.match(/define\('DB_USER',\s*'([^']+)'\)/);
-      const passMatch = content.match(/define\('DB_PASS',\s*'([^']+)'\)/);
-      
-      if (hostMatch) phpConfig.host = hostMatch[1];
-      if (nameMatch) phpConfig.database = nameMatch[1];
-      if (userMatch) phpConfig.user = userMatch[1];
-      if (passMatch) phpConfig.password = passMatch[1];
-      
-      console.log('[DB] Loaded configuration from public/config.php');
-    } catch (e) {
-      console.error('[DB] Error parsing config.php:', e);
-    }
-  }
-
-  if (DB_TYPE === 'postgres' || DB_TYPE === 'supabase') {
+  if (DB_TYPE === 'postgres') {
     try {
       console.log(`[DB] Connecting to PostgreSQL/Supabase...`);
       pgPool = new PgPool({
@@ -135,73 +111,8 @@ async function startServer() {
       };
     } catch (err) {
       console.error('[DB] Failed to connect to PostgreSQL/Supabase:', err);
-      if (process.env.DB_TYPE === 'postgres' || process.env.DB_TYPE === 'supabase') {
-        process.exit(1);
-      } else {
-        console.log('[DB] Falling back to SQLite due to PostgreSQL connection failure');
-        setupSQLite();
-      }
-    }
-  } else if (DB_TYPE === 'mysql') {
-    try {
-      const mysqlConfig = {
-        host: process.env.MYSQL_HOST || phpConfig.host || 'localhost',
-        user: process.env.MYSQL_USER || phpConfig.user || 'root',
-        password: process.env.MYSQL_PASSWORD || phpConfig.password || '',
-        database: process.env.MYSQL_DATABASE || phpConfig.database || 'eduamigo',
-        waitForConnections: true,
-        connectionLimit: 10,
-        queueLimit: 0,
-        supportBigNumbers: true,
-        bigNumberStrings: true,
-        multipleStatements: true
-      };
-      
-      console.log(`[DB] Connecting to MySQL at ${mysqlConfig.host} as ${mysqlConfig.user}...`);
-      mysqlPool = mysql.createPool(mysqlConfig);
-      
-      // Test connection immediately
-      const [testResult] = await mysqlPool.query('SELECT 1');
-      console.log('[DB] MySQL connection test successful');
-      
-      // Helper for MySQL queries to mimic better-sqlite3 API
-      db = {
-        prepare: (sql: string) => ({
-          run: async (...args: any[]) => {
-            // Map undefined to null for MySQL
-            const mappedArgs = args.map(a => a === undefined ? null : a);
-            const [result] = await mysqlPool!.execute(sql, mappedArgs);
-            return {
-              lastInsertRowid: (result as any).insertId,
-              changes: (result as any).affectedRows
-            };
-          },
-          get: async (...args: any[]) => {
-            const mappedArgs = args.map(a => a === undefined ? null : a);
-            const [rows] = await mysqlPool!.execute(sql, mappedArgs);
-            return (rows as any[])[0];
-          },
-          all: async (...args: any[]) => {
-            const mappedArgs = args.map(a => a === undefined ? null : a);
-            const [rows] = await mysqlPool!.execute(sql, mappedArgs);
-            return rows as any[];
-          }
-        }),
-        exec: async (sql: string) => {
-          // With multipleStatements: true, we can execute the whole block
-          await mysqlPool!.query(sql);
-        }
-      };
-    } catch (err) {
-      console.error('[DB] Failed to connect to MySQL:', err);
-      // Fallback to SQLite if MySQL fails but user didn't explicitly force it?
-      // No, if they specified MySQL, we should probably fail.
-      if (process.env.DB_TYPE === 'mysql') {
-        process.exit(1);
-      } else {
-        console.log('[DB] Falling back to SQLite due to MySQL connection failure');
-        setupSQLite();
-      }
+      console.log('[DB] Falling back safely to local SQLite database...');
+      setupSQLite();
     }
   } else {
     setupSQLite();
@@ -248,18 +159,13 @@ async function startServer() {
   // We'll use the db_schema_complete.sql file if it exists and we're on MySQL,
   // or just use the hardcoded ones as a fallback.
   try {
-    if (DB_TYPE === 'mysql' && fs.existsSync(path.join(process.cwd(), 'db_schema_complete.sql'))) {
-      console.log('[DB] Initializing MySQL from db_schema_complete.sql');
-      const schema = fs.readFileSync(path.join(process.cwd(), 'db_schema_complete.sql'), 'utf8');
-      await db.exec(schema);
-    } else {
-      await db.exec(`
-        CREATE TABLE IF NOT EXISTS users (
-          id VARCHAR(64) PRIMARY KEY,
-          email VARCHAR(255) UNIQUE,
-          password_hash VARCHAR(255),
-          parent_pin VARCHAR(10) DEFAULT '1234'
-        );
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS users (
+        id VARCHAR(64) PRIMARY KEY,
+        email VARCHAR(255) UNIQUE,
+        password_hash VARCHAR(255),
+        parent_pin VARCHAR(10) DEFAULT '1234'
+      );
 
         CREATE TABLE IF NOT EXISTS children (
           id VARCHAR(64) PRIMARY KEY,
@@ -415,7 +321,6 @@ async function startServer() {
           createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
       `);
-    }
   } catch (err) {
     console.error('[DB] Initialization error (safe to ignore if tables exist):', err);
   }
@@ -612,29 +517,16 @@ async function startServer() {
           res.json({ status: 'not_found' });
         }
       } else if (action === 'save_progress') {
-        if (DB_TYPE === 'mysql') {
-          await db.prepare(`
-            INSERT INTO english_progress (child_id, user_id, current_level, points, completed_lessons, last_active, streak)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON DUPLICATE KEY UPDATE
-              current_level = VALUES(current_level),
-              points = VALUES(points),
-              completed_lessons = VALUES(completed_lessons),
-              last_active = VALUES(last_active),
-              streak = VALUES(streak)
-          `).run(data.childId, data.userId, data.currentLevel, data.points, JSON.stringify(data.completedLessons || []), data.lastActive, data.streak);
-        } else {
-          await db.prepare(`
-            INSERT INTO english_progress (child_id, user_id, current_level, points, completed_lessons, last_active, streak)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(child_id) DO UPDATE SET
-              current_level = excluded.current_level,
-              points = excluded.points,
-              completed_lessons = excluded.completed_lessons,
-              last_active = excluded.last_active,
-              streak = excluded.streak
-          `).run(data.childId, data.userId, data.currentLevel, data.points, JSON.stringify(data.completedLessons || []), data.lastActive, data.streak);
-        }
+        await db.prepare(`
+          INSERT INTO english_progress (child_id, user_id, current_level, points, completed_lessons, last_active, streak)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(child_id) DO UPDATE SET
+            current_level = excluded.current_level,
+            points = excluded.points,
+            completed_lessons = excluded.completed_lessons,
+            last_active = excluded.last_active,
+            streak = excluded.streak
+        `).run(data.childId, data.userId, data.currentLevel, data.points, JSON.stringify(data.completedLessons || []), data.lastActive, data.streak);
         res.json({ status: 'success' });
       }
     } catch (e: any) {

@@ -70,10 +70,10 @@ const ReadingHistory: React.FC<ReadingHistoryProps> = ({ userId, childId }) => {
                 </span>
               </div>
               <h4 className="font-bold text-slate-800 text-sm truncate">
-                {session.text.substring(0, 40)}...
+                {(session.textRead || (session as any).text || '').substring(0, 40)}...
               </h4>
               <p className="text-[10px] text-slate-400 mt-1">
-                Fluidez: {session.analysis.fluency}/10 · Comprensión: {session.analysis.comprehension}/10
+                Fluidez: {session.analysis.fluency}/10 · Comprensión: {session.analysis.comprehensionScore ?? (session.analysis as any).comprehension ?? '-'}/10
               </p>
             </div>
             <span className="text-slate-300 group-hover:text-blue-600 transition-colors">→</span>
@@ -102,7 +102,7 @@ const ReadingHistory: React.FC<ReadingHistoryProps> = ({ userId, childId }) => {
                 <div className="space-y-4">
                   <h5 className="font-black text-slate-800 uppercase text-xs tracking-widest">Texto Leído</h5>
                   <div className="p-6 rounded-2xl border-2 border-blue-50 bg-blue-50/30 text-slate-700 leading-relaxed italic">
-                    "{selectedSession.text}"
+                    "{selectedSession.textRead || (selectedSession as any).text}"
                   </div>
                   {selectedSession.audioUrl && (
                     <div className="mt-4">
@@ -129,7 +129,7 @@ const ReadingHistory: React.FC<ReadingHistoryProps> = ({ userId, childId }) => {
                       📝 Feedback Detallado
                     </h5>
                     <p className="text-sm text-slate-600 leading-relaxed">
-                      {selectedSession.analysis.feedback}
+                      {selectedSession.analysis.generalFeedback || (selectedSession.analysis as any).feedback}
                     </p>
                   </div>
 

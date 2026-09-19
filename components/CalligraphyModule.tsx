@@ -108,7 +108,7 @@ const CalligraphyModule: React.FC<CalligraphyModuleProps> = ({ userId, childId, 
               ${contentHtml}
             </div>
             <div class="footer">
-              Generado por EduAmigo J21 Tech - Innovación en Educación • 2025<br/>
+              Generado por EduAmigo J21 Tech - Innovación en Educación • 2026<br/>
               ¡Sigue practicando, cada trazo te hace mejor!
             </div>
             <script>

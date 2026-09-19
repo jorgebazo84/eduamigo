@@ -2,19 +2,32 @@
 import { CalendarEvent, Child } from '../types';
 
 export const requestNotificationPermission = async () => {
-  if (!('Notification' in window)) return false;
-  const permission = await Notification.requestPermission();
-  return permission === 'granted';
+  try {
+    if (typeof window === 'undefined' || !('Notification' in window)) return false;
+    let isIframe = false;
+    try {
+      isIframe = window.self !== window.top;
+    } catch {
+      isIframe = true;
+    }
+    if (isIframe) return false;
+    const permission = await Notification.requestPermission();
+    return permission === 'granted';
+  } catch (e) {
+    return false;
+  }
 };
 
 export const sendLocalNotification = (title: string, body: string, icon?: string) => {
-  if (Notification.permission === 'granted') {
-    new Notification(title, {
-      body,
-      icon: icon || '/favicon.ico',
-      badge: '/favicon.ico',
-    });
-  }
+  try {
+    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+      new Notification(title, {
+        body,
+        icon: icon || '/favicon.ico',
+        badge: '/favicon.ico',
+      });
+    }
+  } catch (e) {}
 };
 
 export const checkUpcomingEvents = (events: CalendarEvent[], children: Child[]) => {

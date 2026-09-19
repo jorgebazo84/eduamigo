@@ -4,15 +4,15 @@ import { GradeLevel, Subject, ExplanationResponse, Region, SyllabusTopic, TopicD
 import { FALLBACK_SYLLABUS, FALLBACK_TOPIC_DETAILS, getGenericSyllabus } from "../data/fallbackData";
 
 // Usamos la variable de entorno proporcionada por la plataforma
-const apiKey = process.env.GEMINI_API_KEY;
+const apiKey = process.env.GEMINI_API_KEY || (typeof window !== 'undefined' && (window as any).process?.env?.GEMINI_API_KEY) || '';
 
 if (!apiKey) {
-  console.error("❌ CRITICAL: GEMINI_API_KEY is missing from environment!");
+  console.warn("⚠️ GEMINI_API_KEY is not defined in the current environment; running in fallback mode.");
 } else {
   console.log("✅ GEMINI_API_KEY detected (starts with:", apiKey.substring(0, 5), ")");
 }
 
-export const ai = new GoogleGenAI({ apiKey: apiKey || "" });
+export const ai = new GoogleGenAI({ apiKey: apiKey || "demo_key" });
 
 export class GeminiError extends Error {
   status?: number;

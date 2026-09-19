@@ -1,6 +1,7 @@
 
 import React, { useState } from 'react';
 import { authService } from '../services/authService';
+import { APP_VERSION, APP_YEAR } from '../version';
 
 interface AuthScreenProps {
   onAuthenticated: (userId: string, email: string, pin: string) => void;
@@ -169,7 +170,7 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onAuthenticated, onDemo }) => {
         </button>
       </div>
 
-      {/* FOOTER CORPORATIVO EWOLA J21 TECH V.1.0.1 */}
+      {/* FOOTER CORPORATIVO EWOLA J21 TECH */}
       <footer className="mt-12 text-center relative z-10 animate-in fade-in slide-in-from-bottom-4 duration-1000 delay-500">
          <div className="flex flex-col items-center gap-2">
             <div className="flex items-center gap-3">
@@ -183,8 +184,8 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onAuthenticated, onDemo }) => {
                </div>
                <div className="w-10 h-[1px] bg-gradient-to-l from-transparent to-[#00B4D8]"></div>
             </div>
-            <p className="text-[#00B4D8]/40 text-[8px] font-black uppercase tracking-[0.4em] mt-1">
-               INNOVATION & EDUCATION • VERSION 1.0.1 • 2025
+            <p className="text-[#00B4D8]/60 text-[8px] font-black uppercase tracking-[0.3em] mt-1">
+               INNOVATION & EDUCATION • VERSION {APP_VERSION} • {APP_YEAR}
             </p>
          </div>
       </footer>
