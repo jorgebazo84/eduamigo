@@ -31,7 +31,7 @@ export type Country =
   | 'Honduras' | 'México' | 'Nicaragua' | 'Panamá' | 'Paraguay' | 'Puerto Rico' 
   | 'Uruguay' | 'Venezuela';
 
-export type ViewMode = 'ask' | 'chat' | 'student' | 'parent' | 'library' | 'exam' | 'shop' | 'location' | 'vision' | 'voice' | 'planner' | 'scanner' | 'calligraphy' | 'reading' | 'math' | 'daily-report' | 'daily-review' | 'english' | 'pomodoro' | 'static-library';
+export type ViewMode = 'ask' | 'chat' | 'student' | 'parent' | 'library' | 'exam' | 'shop' | 'location' | 'vision' | 'voice' | 'planner' | 'scanner' | 'calligraphy' | 'reading' | 'math' | 'daily-report' | 'daily-review' | 'english' | 'pomodoro' | 'static-library' | 'worksheets';
 export type UserRole = 'student' | 'parent' | 'demo' | null;
 
 export type EventType = 'exam' | 'meeting' | 'excursion' | 'support' | 'medical' | 'other';

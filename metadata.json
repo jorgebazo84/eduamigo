@@ -1,6 +1,6 @@
 {
   "name": "EduAmigo",
-  "description": "EduAmigo Tutor Inteligente",
+  "description": "EduAmigo: Tutor Inteligente y Asistente Escolar Personalizado",
   "requestFramePermissions": [
     "microphone",
     "geolocation",

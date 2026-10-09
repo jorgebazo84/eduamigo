@@ -33,6 +33,7 @@ import { srsService } from './services/srsService';
 import DailyStudyRecorder from './components/DailyStudyRecorder';
 import ReviewTaskModule from './components/ReviewTaskModule';
 import EnglishModule from './components/english/EnglishModule';
+import { WorksheetHub } from './components/worksheets/WorksheetHub';
 import { APP_VERSION, APP_YEAR } from './version';
 import { OfflineStatusBanner } from './components/OfflineStatusBanner';
 import { offlineStorageService } from './services/offlineStorageService';
@@ -405,6 +406,25 @@ const App: React.FC = () => {
     if (!activeChildId) return;
     const updatedChildren = children.map(c => {
       if (c.id === activeChildId) {
+        const updated = { ...c, points: c.points + points, streak: { ...c.streak, lastActive: Date.now() } };
+        if (userRole !== 'demo' && userId) {
+          fetch(`api.php?action=update_child_points&userId=${userId}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(updated)
+          });
+        }
+        return updated;
+      }
+      return c;
+    });
+    setChildren(updatedChildren);
+    showToast(`¡Ganas ${points} puntos! ⭐`, "success");
+  };
+
+  const awardPointsToChild = async (childId: string, points: number) => {
+    const updatedChildren = children.map(c => {
+      if (c.id === childId) {
         const updated = { ...c, points: c.points + points, streak: { ...c.streak, lastActive: Date.now() } };
         if (userRole !== 'demo' && userId) {
           fetch(`api.php?action=update_child_points&userId=${userId}`, {
@@ -794,7 +814,18 @@ const App: React.FC = () => {
           {viewMode === 'voice' && activeChild && <OralPractice grade={activeChild.grade} subject="Inglés" onActivityLog={handleActivityLog} />}
           {viewMode === 'calligraphy' && activeChild && <CalligraphyModule userId={userId || 'demo'} childId={activeChild.id} childName={activeChild.name} grade={activeChild.grade} onAwardPoints={awardPoints} onActivityLog={handleActivityLog} />}
           {viewMode === 'reading' && activeChild && <ReadingModule userId={userId || 'demo'} childId={activeChild.id} childName={activeChild.name} grade={activeChild.grade} onAwardPoints={awardPoints} onActivityLog={handleActivityLog} />}
-          {viewMode === 'math' && activeChild && <MathModule userId={userId || 'demo'} childId={activeChild.id} childName={activeChild.name} grade={activeChild.grade} onAwardPoints={awardPoints} onActivityLog={handleActivityLog} />}
+          {viewMode === 'math' && activeChild && (
+            <MathModule 
+              userId={userId || 'demo'} 
+              childId={activeChild.id} 
+              childName={activeChild.name} 
+              grade={activeChild.grade} 
+              onAwardPoints={awardPoints} 
+              onActivityLog={handleActivityLog}
+              books={books}
+              childrenList={children}
+            />
+          )}
           {viewMode === 'static-library' && activeChild && <StaticContentLibrary grade={activeChild.grade} />}
           {viewMode === 'pomodoro' && activeChild && (
             <PomodoroTimer 
@@ -814,7 +845,13 @@ const App: React.FC = () => {
               onReverseGeocode={handleReverseGeocode} 
             />
           )}
-          {viewMode === 'vision' && activeChild && <VisionTutor grade={activeChild.grade} onActivityLog={handleActivityLog} />}
+          {viewMode === 'vision' && activeChild && (
+            <VisionTutor 
+              grade={activeChild.grade} 
+              onActivityLog={handleActivityLog} 
+              onNavigateToWorksheets={() => setViewMode('worksheets')}
+            />
+          )}
           {viewMode === 'scanner' && activeChild && <SchoolDocumentScanner childId={activeChild.id} onEventAdded={handleAddEvent} />}
           {viewMode === 'daily-report' && activeChild && (
             <DailyStudyRecorder 
@@ -842,7 +879,26 @@ const App: React.FC = () => {
               )}
             </div>
           )}
-          {viewMode === 'shop' && activeChild && <RewardsShop child={activeChild} rewards={rewards} />}
+          {viewMode === 'shop' && activeChild && (
+            <RewardsShop 
+              child={activeChild} 
+              rewards={rewards} 
+              onDeductPoints={(cost) => awardPoints(-cost)}
+            />
+          )}
+          {viewMode === 'worksheets' && (
+            <div className="animate-in fade-in duration-300">
+              <WorksheetHub 
+                childrenList={children}
+                books={books}
+                userRole={userRole}
+                activeChildId={activeChildId}
+                isParentUnlocked={isParentUnlocked}
+                onRequireParentPin={() => setShowAuthModal(true)}
+                onAwardPoints={(cId, pts) => awardPointsToChild(cId, pts)}
+              />
+            </div>
+          )}
           {viewMode === 'parent' && (
             <ParentDashboard 
               userId={userId || 'demo'}
@@ -891,6 +947,7 @@ const App: React.FC = () => {
               reviewPlans={reviewPlans}
               books={books}
               onCreateReviewPlan={handleCreateReviewPlan}
+              onAwardPointsToChild={awardPointsToChild}
             />
           )}
         </div>

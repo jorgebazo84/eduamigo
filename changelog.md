@@ -2,6 +2,44 @@
 
 Todas las modificaciones, mejoras de funcionalidad, parches de seguridad y correcciones del proyecto EduAmigo quedan registradas en este documento siguiendo el estándar de versionado semántico [SemVer](https://semver.org/).
 
+---
+
+## [1.2.0] - 2026-09-20 — Taller de Matemáticas Interactivo, Álbum de Cromos y Reportes Académicos PDF
+
+### 🔢 Taller de Matemáticas Interactivo y Multimodal (`MathModule.tsx`)
+- **Speed Math Arcade (Cálculo Mental contra reloj)**:
+  - Partidas de 45 segundos con desafíos aritméticos aleatorios ajustados por curso.
+  - Mecánica de rachas consecutivas y combos de puntos.
+  - Pantalla de estadísticas finales con precisión y récord personal.
+- **Pizarra Digital Táctil (Canvas Scratchpad)**:
+  - Lienzo de dibujo fluido con selector de grosores y colores para realizar operaciones intermedias a mano alzada.
+  - Botón de borrado rápido y posibilidad de consultar al Tutor IA el paso a paso.
+- **Análisis Óptico y Detección de Errores con IA**:
+  - Pestaña de subida o foto de problemas manuscritos e impresos.
+  - Explicación socrática guiada sin dar directamente la solución.
+
+### 🏆 Sistema de Logros y Álbum de Cromos Educativos (`StickerAlbum.tsx` y `types/stickers.ts`)
+- **Catálogo de Cromos Coleccionables**:
+  - 12 cromos organizados en 4 series temáticas: Exploración Espacial, Naturaleza y Ecosistemas, Grandes Científicos e Historia, y Matemáticas Mágicas.
+  - Sistema de rarezas (Común, Raro, Legendario) con detalles pedagógicos ilustrados.
+- **Tienda y Desbloqueo por Esfuerzo**:
+  - Desbloqueo de cromos con los puntos (XP) ganados estudiando y resolviendo retos.
+  - Persistencia de cromos coleccionados por perfil de estudiante en almacenamiento local.
+  - Integración en `RewardsShop.tsx` y resumen en `GamificationCenter.tsx`.
+
+### 📄 Informes Académicos Descargables en PDF (`AcademicReportPDF.tsx`)
+- **Generador de Informes Oficiales para Familias y Tutores**:
+  - Vista previa interactiva con maquetación en formato DIN A4 y membrete oficial EduAmigo J21.
+  - Filtros por alumno y períodos temporales (7 días, 30 días o curso completo).
+  - Resumen ejecutivo con medias de exámenes, actividad por competencias (Matemáticas, Lectura, Inglés) y racha de estudio.
+  - Botón de exportación e impresión limpia en PDF (`window.print()`) optimizado para evitar elementos de navegación.
+  - Función de copiado rápido en formato texto para enviar por WhatsApp o correo electrónico a los docentes del colegio.
+  - Integrado de forma accesible en el Panel de Control Parental (`ParentDashboard.tsx`).
+
+### 🚀 Despliegue y Puesta a Punto en Producción (Render & Supabase)
+- Eliminación de archivos residuales obsoletos (`bun.lock`).
+- Esquema de base de datos PostgreSQL unificado y validado en `supabase_schema.sql`.
+- Actualización de versión a 1.2.0 en `version.ts`, `package.json` y `changelog.md`.
 
 ---
 
