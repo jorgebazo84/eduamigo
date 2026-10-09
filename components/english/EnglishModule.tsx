@@ -26,6 +26,12 @@ const EnglishModule: React.FC<EnglishModuleProps> = ({ child, userId, onActivity
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [writingText, setWritingText] = useState('');
   const [isRecording, setIsRecording] = useState(false);
+  const [speakingTranscript, setSpeakingTranscript] = useState('');
+  const [speakingScore, setSpeakingScore] = useState<number | null>(null);
+  const [speakingFeedback, setSpeakingFeedback] = useState<string>('');
+  const [activePhraseIndex, setActivePhraseIndex] = useState<number>(0);
+  const [isAudioModelPlaying, setIsAudioModelPlaying] = useState(false);
+  const speechRecognitionRef = React.useRef<any>(null);
   const startTimeRef = React.useRef<number | null>(null);
 
   useEffect(() => {
@@ -189,24 +195,127 @@ const EnglishModule: React.FC<EnglishModuleProps> = ({ child, userId, onActivity
     }
   };
 
+  const playModelAudio = (text: string) => {
+    if (!('speechSynthesis' in window)) {
+      alert("Tu navegador no soporta síntesis de voz.");
+      return;
+    }
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = 'en-US';
+    utterance.rate = 0.88; // clear cadence for children
+    utterance.pitch = 1.05;
+    
+    // Try to find English voice
+    const voices = window.speechSynthesis.getVoices();
+    const englishVoice = voices.find(v => v.lang.startsWith('en') && (v.name.includes('Natural') || v.name.includes('Samantha') || v.name.includes('Google') || v.name.includes('US')));
+    if (englishVoice) utterance.voice = englishVoice;
+
+    setIsAudioModelPlaying(true);
+    utterance.onend = () => setIsAudioModelPlaying(false);
+    utterance.onerror = () => setIsAudioModelPlaying(false);
+    window.speechSynthesis.speak(utterance);
+  };
+
+  const calculatePronunciationScore = (spokenText: string, targetPhrase: string) => {
+    const cleanSpoken = spokenText.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
+    const cleanTarget = targetPhrase.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
+
+    if (cleanTarget.length === 0 || cleanSpoken.length === 0) return 0;
+
+    let matches = 0;
+    cleanTarget.forEach(targetWord => {
+      if (cleanSpoken.some(spokenWord => spokenWord === targetWord || spokenWord.includes(targetWord) || targetWord.includes(spokenWord))) {
+        matches++;
+      }
+    });
+
+    const accuracy = Math.min(100, Math.round((matches / cleanTarget.length) * 100));
+    return accuracy;
+  };
+
   const toggleRecording = () => {
-    setIsRecording(!isRecording);
-    if (!isRecording) {
-      const start = Date.now();
-      // Simulate recording start
-      setTimeout(() => {
+    if (isRecording) {
+      if (speechRecognitionRef.current) {
+        speechRecognitionRef.current.stop();
+      }
+      setIsRecording(false);
+      return;
+    }
+
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert("Tu navegador no soporta reconocimiento de voz nativo. Te sugerimos usar Google Chrome o Safari.");
+      return;
+    }
+
+    try {
+      const recognition = new SpeechRecognition();
+      speechRecognitionRef.current = recognition;
+      recognition.lang = 'en-US';
+      recognition.continuous = true;
+      recognition.interimResults = true;
+
+      setSpeakingTranscript('');
+      setSpeakingScore(null);
+      setSpeakingFeedback('');
+      setIsRecording(true);
+
+      const targetPhrase = lesson?.skills.speaking.suggestedPhrases[activePhraseIndex] || lesson?.skills.speaking.topic || "";
+
+      recognition.onresult = (event: any) => {
+        let transcript = '';
+        for (let i = 0; i < event.results.length; i++) {
+          transcript += event.results[i][0].transcript + ' ';
+        }
+        const trimmed = transcript.trim();
+        setSpeakingTranscript(trimmed);
+
+        const score = calculatePronunciationScore(trimmed, targetPhrase);
+        setSpeakingScore(score);
+
+        if (score >= 80) {
+          setSpeakingFeedback("🌟 Fantastic! Natural pronunciation! (+15 XP)");
+        } else if (score >= 50) {
+          setSpeakingFeedback("👍 Good pronunciation! Keep it up! (+10 XP)");
+        } else {
+          setSpeakingFeedback("💪 Good attempt! Listen to the model and pronounce clearly.");
+        }
+      };
+
+      recognition.onerror = (event: any) => {
+        console.warn("Speech recognition notice:", event.error);
+        if (event.error !== 'no-speech') {
+          setIsRecording(false);
+        }
+      };
+
+      recognition.onend = () => {
         setIsRecording(false);
-        const duration = Math.floor((Date.now() - start) / 1000);
-        if (onActivityLog) {
-          onActivityLog(`Práctica Oral Inglés: ${lesson?.skills.speaking.topic}`, "Inglés", {
-            text: `Práctica oral sobre ${lesson?.skills.speaking.topic}`,
+        const duration = startTimeRef.current ? Math.floor((Date.now() - startTimeRef.current) / 1000) : 0;
+        
+        // Award XP if completed with decent score
+        if (speakingScore && speakingScore >= 50 && progress) {
+          const xp = speakingScore >= 80 ? 15 : 10;
+          const updated = { ...progress, points: progress.points + xp };
+          saveProgress(updated);
+        }
+
+        if (onActivityLog && speakingTranscript) {
+          onActivityLog(`Speaking en Inglés: ${lesson?.skills.speaking.topic}`, "Inglés", {
+            text: `Práctica oral de inglés (${targetPhrase})`,
             type: 'english_speaking',
             duration,
-            transcription: "Simulated transcription of English practice"
+            score: speakingScore,
+            transcription: speakingTranscript
           });
         }
-        alert("Speaking practice recorded and analyzed! (Simulation)");
-      }, 3000);
+      };
+
+      recognition.start();
+    } catch (e) {
+      console.error("Error starting speech recognition", e);
+      setIsRecording(false);
     }
   };
 
@@ -409,9 +518,17 @@ const EnglishModule: React.FC<EnglishModuleProps> = ({ child, userId, onActivity
             {/* Listening Section */}
             <section className="bg-blue-50 p-6 rounded-3xl border border-blue-100">
               <h4 className="font-bold text-blue-800 mb-4 flex items-center gap-2">🎧 Listening Practice</h4>
-              <div className="bg-white p-4 rounded-2xl mb-4 flex items-center justify-between">
+              <div className="bg-white p-4 rounded-2xl mb-4 flex items-center justify-between gap-4">
                 <p className="text-sm text-slate-600 italic">"Listen to the teacher and answer the questions below."</p>
-                <button className="bg-blue-600 text-white p-3 rounded-full hover:scale-110 transition-transform">🔊</button>
+                <button 
+                  onClick={() => playModelAudio(lesson.skills.reading.text || "Listen carefully to the audio and choose the correct answer.")}
+                  className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2 text-white shadow-md transition-all ${
+                    isAudioModelPlaying ? 'bg-amber-500 animate-pulse' : 'bg-blue-600 hover:bg-blue-700'
+                  }`}
+                  title="Play model voice"
+                >
+                  <span>{isAudioModelPlaying ? '🔊 Playing...' : '🔊 Play Audio'}</span>
+                </button>
               </div>
               <div className="space-y-4">
                 {lesson.skills.listening.questions.map((q, idx) => (
@@ -510,25 +627,109 @@ const EnglishModule: React.FC<EnglishModuleProps> = ({ child, userId, onActivity
 
             {/* Speaking Section */}
             <section className="bg-orange-50 p-6 rounded-3xl border border-orange-100">
-              <h4 className="font-bold text-orange-800 mb-4 flex items-center gap-2">🗣️ Speaking Practice</h4>
-              <p className="text-slate-700 mb-4">Topic: <span className="font-bold">{lesson.skills.speaking.topic}</span></p>
-              <div className="flex flex-wrap gap-2 mb-6">
-                {lesson.skills.speaking.suggestedPhrases.map((phrase, idx) => (
-                  <span key={idx} className="bg-white px-3 py-1 rounded-full text-xs text-orange-600 border border-orange-200">
-                    "{phrase}"
-                  </span>
-                ))}
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 mb-4">
+                <div>
+                  <h4 className="font-bold text-orange-800 flex items-center gap-2">🗣️ Live Speaking Practice</h4>
+                  <p className="text-slate-600 text-xs">Pronounce clearly in English. The app detects your voice in real time.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const phraseToSpeak = lesson.skills.speaking.suggestedPhrases[activePhraseIndex] || lesson.skills.speaking.topic;
+                    playModelAudio(phraseToSpeak);
+                  }}
+                  className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2 border shadow-sm transition-all ${
+                    isAudioModelPlaying 
+                      ? 'bg-amber-500 text-white border-amber-600 animate-pulse' 
+                      : 'bg-white text-orange-700 border-orange-200 hover:bg-orange-100'
+                  }`}
+                >
+                  <span>{isAudioModelPlaying ? '🔊 Listening Model...' : '🔊 Listen Native Model'}</span>
+                </button>
               </div>
-              <div className="flex justify-center">
+
+              <div className="bg-white/80 p-4 rounded-2xl border border-orange-100 mb-4">
+                <p className="text-xs font-bold text-orange-900 mb-2 uppercase tracking-wide">
+                  Topic: <span className="text-slate-700 font-normal">{lesson.skills.speaking.topic}</span>
+                </p>
+                <p className="text-xs text-slate-500 mb-2">Tap any sentence below to practice it:</p>
+                <div className="flex flex-wrap gap-2">
+                  {lesson.skills.speaking.suggestedPhrases.map((phrase, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => {
+                        setActivePhraseIndex(idx);
+                        setSpeakingScore(null);
+                        setSpeakingTranscript('');
+                        setSpeakingFeedback('');
+                      }}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all border text-left ${
+                        activePhraseIndex === idx
+                          ? 'bg-orange-600 text-white border-orange-600 shadow-md scale-105'
+                          : 'bg-white text-orange-700 border-orange-200 hover:bg-orange-50'
+                      }`}
+                    >
+                      {activePhraseIndex === idx ? '🎯 ' : ''}"{phrase}"
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Target phrase highlight */}
+              <div className="bg-orange-100/70 p-4 rounded-2xl border border-orange-200 mb-4 text-center">
+                <span className="text-xs font-black uppercase text-orange-700 block mb-1">Target phrase to pronounce:</span>
+                <p className="text-base sm:text-lg font-black text-slate-800">
+                  "{lesson.skills.speaking.suggestedPhrases[activePhraseIndex] || lesson.skills.speaking.topic}"
+                </p>
+              </div>
+
+              {/* Live Voice Indicator & Controls */}
+              <div className="flex flex-col items-center justify-center gap-3">
                 <button 
+                  type="button"
                   onClick={toggleRecording}
                   className={`w-20 h-20 rounded-full flex items-center justify-center text-3xl shadow-lg transition-all active:scale-95 ${
-                    isRecording ? 'bg-red-500 animate-pulse' : 'bg-orange-500 hover:scale-110'
+                    isRecording ? 'bg-red-500 text-white animate-pulse ring-8 ring-red-200' : 'bg-orange-500 text-white hover:scale-110'
                   }`}
+                  title={isRecording ? 'Stop Recording' : 'Start Live Speaking'}
                 >
                   {isRecording ? '⏹️' : '🎙️'}
                 </button>
+                <span className="text-xs font-bold text-slate-600">
+                  {isRecording ? 'Escuchando en inglés... ¡Habla ahora!' : 'Toca el micrófono para comenzar a hablar'}
+                </span>
               </div>
+
+              {/* Real-time Transcription & Score */}
+              {(isRecording || speakingTranscript || speakingScore !== null) && (
+                <div className="mt-5 bg-white p-5 rounded-2xl border border-orange-200 shadow-sm animate-in fade-in duration-300">
+                  <div className="flex items-center justify-between gap-2 mb-2 pb-2 border-b border-slate-100">
+                    <span className="text-xs font-black uppercase text-slate-500">Live Voice Transcription:</span>
+                    {speakingScore !== null && (
+                      <span className={`px-3 py-1 rounded-full text-xs font-black ${
+                        speakingScore >= 80 
+                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' 
+                          : speakingScore >= 50 
+                          ? 'bg-amber-100 text-amber-800 border border-amber-300' 
+                          : 'bg-red-100 text-red-800 border border-red-300'
+                      }`}>
+                        {speakingScore}% Accuracy
+                      </span>
+                    )}
+                  </div>
+
+                  <p className="text-slate-800 font-medium italic min-h-[32px]">
+                    {speakingTranscript || <span className="text-slate-400">Habla en inglés frente al micrófono...</span>}
+                  </p>
+
+                  {speakingFeedback && (
+                    <div className="mt-3 p-3 rounded-xl bg-orange-50 border border-orange-100 text-xs font-bold text-orange-900">
+                      {speakingFeedback}
+                    </div>
+                  )}
+                </div>
+              )}
             </section>
 
             <div className="flex justify-center pt-8">

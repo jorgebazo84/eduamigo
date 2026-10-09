@@ -151,7 +151,15 @@ const StudyModuleContainer: React.FC<StudyModuleContainerProps> = ({ userId, chi
                   onClick={() => onViewChange('calligraphy')}
                   className="bg-indigo-50 text-indigo-600 px-4 py-2 rounded-xl text-xs font-black flex items-center gap-2 hover:bg-indigo-100 transition-all"
                 >
-                  ✍️ Practicar Caligrafía
+                  ✍️ Caligrafía
+                </button>
+              )}
+              {onViewChange && (
+                <button 
+                  onClick={() => onViewChange('math')}
+                  className="bg-orange-50 text-orange-600 px-4 py-2 rounded-xl text-xs font-black flex items-center gap-2 hover:bg-orange-100 transition-all shadow-sm border border-orange-100"
+                >
+                  🔢 Taller de Mates
                 </button>
               )}
             </div>

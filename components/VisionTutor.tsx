@@ -6,9 +6,10 @@ import { GradeLevel, Subject } from '../types';
 interface VisionTutorProps {
   grade: GradeLevel;
   onActivityLog?: (question: string, subject: Subject, answer: any) => void;
+  onNavigateToWorksheets?: () => void;
 }
 
-const VisionTutor: React.FC<VisionTutorProps> = ({ grade, onActivityLog }) => {
+const VisionTutor: React.FC<VisionTutorProps> = ({ grade, onActivityLog, onNavigateToWorksheets }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isCameraActive, setIsCameraActive] = useState(false);
@@ -66,7 +67,26 @@ const VisionTutor: React.FC<VisionTutorProps> = ({ grade, onActivityLog }) => {
         <h2 className="text-2xl font-black text-blue-900 mb-2 flex items-center gap-2">
           📸 Tutor Visual
         </h2>
-        <p className="text-blue-500 font-bold text-sm mb-6">Saca una foto a tus deberes y te los explicaré.</p>
+        <p className="text-blue-500 font-bold text-sm mb-4">Saca una foto a tus deberes y te los explicaré.</p>
+
+        {onNavigateToWorksheets && (
+          <div className="mb-6 p-4 bg-gradient-to-r from-emerald-50 to-blue-50 border-2 border-emerald-200 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+            <div className="space-y-0.5">
+              <span className="text-[10px] font-black uppercase text-emerald-800 tracking-wider">
+                🌟 Nuevo Corrector Completo de Deberes & Refuerzo A4
+              </span>
+              <p className="text-xs text-slate-700 font-semibold">
+                Fotografía la hoja completa de deberes o ficha de clase: la IA la corrige, redacta una <strong>Guía Explicativa adaptada para imprimir</strong> y genera una <strong>Ficha A4 de Refuerzo</strong> personalizada.
+              </p>
+            </div>
+            <button
+              onClick={onNavigateToWorksheets}
+              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs rounded-xl shadow-md transition-all whitespace-nowrap cursor-pointer"
+            >
+              Ir a Fichas & Deberes A4 →
+            </button>
+          </div>
+        )}
 
         {isCameraActive ? (
           <div className="relative rounded-3xl overflow-hidden bg-black aspect-video">

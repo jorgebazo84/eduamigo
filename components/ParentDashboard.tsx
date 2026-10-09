@@ -15,6 +15,9 @@ import SRSHistory from './SRSHistory';
 import GradeManager from './GradeManager';
 import AICorrectionManager from './AICorrectionManager';
 import ParentReviewManager from './ParentReviewManager';
+import AcademicReportPDF from './AcademicReportPDF';
+import { WorksheetHub } from './worksheets/WorksheetHub';
+import { HomeworkTrackingPanel } from './HomeworkTrackingPanel';
 
 interface ParentDashboardProps {
   userId: string;
@@ -60,6 +63,7 @@ interface ParentDashboardProps {
   reviewPlans: ReviewPlan[];
   books: any[];
   onCreateReviewPlan: (plan: Omit<ReviewPlan, 'id' | 'status'>) => void;
+  onAwardPointsToChild?: (childId: string, points: number) => void;
 }
 
 const ParentDashboard: React.FC<ParentDashboardProps> = ({ 
@@ -69,9 +73,9 @@ const ParentDashboard: React.FC<ParentDashboardProps> = ({
   onToggleTracking, onSetLocationPoint, onSearchAddress, onReverseGeocode,
   academicGrades, onAddGrade, onDeleteGrade, onSetReinforcementPlan,
   aiCorrections, onAddAICorrection, onDeleteAICorrection,
-  dailyReports, reviewPlans, books, onCreateReviewPlan
+  dailyReports, reviewPlans, books, onCreateReviewPlan, onAwardPointsToChild
 }) => {
-  const [activeTab, setActiveTab] = useState<'stats' | 'children' | 'rewards' | 'agenda' | 'inbox' | 'school' | 'location' | 'calligraphy' | 'reading' | 'math' | 'english' | 'grades' | 'ai-corrections' | 'daily-review' | 'srs'>('stats');
+  const [activeTab, setActiveTab] = useState<'stats' | 'reports' | 'worksheets' | 'homework-tracking' | 'children' | 'rewards' | 'agenda' | 'inbox' | 'school' | 'location' | 'calligraphy' | 'reading' | 'math' | 'english' | 'grades' | 'ai-corrections' | 'daily-review' | 'srs'>('stats');
   const [selectedChildId, setSelectedChildId] = useState<string>(children[0]?.id || '');
   
   const pendingRequestsCount = requests.filter(r => r.status === 'pending').length;
@@ -82,6 +86,9 @@ const ParentDashboard: React.FC<ParentDashboardProps> = ({
     <div className="space-y-8 pb-10 animate-in fade-in duration-500">
       <div className="flex flex-wrap gap-2 p-1 bg-blue-100 rounded-2xl w-fit">
         <button onClick={() => setActiveTab('stats')} className={`px-4 md:px-6 py-2 rounded-xl text-xs font-black transition-all ${activeTab === 'stats' ? 'bg-white text-blue-600 shadow-sm' : 'text-blue-500'}`}>📊 Stats</button>
+        <button onClick={() => setActiveTab('reports')} className={`px-4 md:px-6 py-2 rounded-xl text-xs font-black transition-all ${activeTab === 'reports' ? 'bg-white text-indigo-600 shadow-sm' : 'text-indigo-600 font-bold hover:bg-blue-200/50'}`}>📄 Informes PDF</button>
+        <button onClick={() => setActiveTab('homework-tracking')} className={`px-4 md:px-6 py-2 rounded-xl text-xs font-black transition-all ${activeTab === 'homework-tracking' ? 'bg-white text-emerald-700 shadow-sm' : 'text-emerald-700 font-bold hover:bg-blue-200/50'}`}>🎒 Deberes & Esfuerzo</button>
+        <button onClick={() => setActiveTab('worksheets')} className={`px-4 md:px-6 py-2 rounded-xl text-xs font-black transition-all ${activeTab === 'worksheets' ? 'bg-white text-blue-700 shadow-sm' : 'text-blue-700 font-bold hover:bg-blue-200/50'}`}>📑 Fichas Imprimibles</button>
         <button onClick={() => setActiveTab('calligraphy')} className={`px-4 md:px-6 py-2 rounded-xl text-xs font-black transition-all ${activeTab === 'calligraphy' ? 'bg-white text-indigo-600 shadow-sm' : 'text-indigo-500'}`}>✍️ Caligrafía</button>
         <button onClick={() => setActiveTab('reading')} className={`px-4 md:px-6 py-2 rounded-xl text-xs font-black transition-all ${activeTab === 'reading' ? 'bg-white text-blue-600 shadow-sm' : 'text-blue-500'}`}>📖 Lectura</button>
         <button onClick={() => setActiveTab('math')} className={`px-4 md:px-6 py-2 rounded-xl text-xs font-black transition-all ${activeTab === 'math' ? 'bg-white text-orange-600 shadow-sm' : 'text-orange-500'}`}>🔢 Mates</button>
@@ -124,6 +131,33 @@ const ParentDashboard: React.FC<ParentDashboardProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {activeTab === 'reports' && (
+        <AcademicReportPDF
+          children={children}
+          history={history}
+          examHistory={examHistory}
+          academicGrades={academicGrades}
+          dailyReports={dailyReports}
+        />
+      )}
+
+      {activeTab === 'homework-tracking' && (
+        <HomeworkTrackingPanel
+          childrenList={children}
+          onAwardPoints={onAwardPointsToChild}
+        />
+      )}
+
+      {activeTab === 'worksheets' && (
+        <WorksheetHub
+          childrenList={children}
+          books={books}
+          userRole="parent"
+          isParentUnlocked={true}
+          onAwardPoints={onAwardPointsToChild}
+        />
       )}
 
       {activeTab === 'calligraphy' && (

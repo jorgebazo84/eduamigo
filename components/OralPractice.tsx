@@ -13,23 +13,77 @@ interface OralPracticeProps {
 const OralPractice: React.FC<OralPracticeProps> = ({ grade, subject, onActivityLog }) => {
   const [isActive, setIsActive] = useState(false);
   const [transcription, setTranscription] = useState('');
-  const sessionRef = useRef<any>(null);
+  const [spokenText, setSpokenText] = useState('');
+  const recognitionRef = useRef<any>(null);
   const startTimeRef = useRef<number | null>(null);
+
+  const speakTutorResponse = (text: string) => {
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = subject === 'Inglés' ? 'en-US' : 'es-ES';
+      utterance.rate = 0.92;
+      window.speechSynthesis.speak(utterance);
+    }
+  };
 
   const startSession = async () => {
     setIsActive(true);
-    setTranscription('Conectando con tu tutor oral...');
+    setTranscription('¡Micrófono activo! Habla con claridad...');
+    setSpokenText('');
     startTimeRef.current = Date.now();
+
+    const welcomeMsg = subject === 'Inglés' 
+      ? 'Hello! I am your oral English tutor. Tell me about your favorite animal or hobby!' 
+      : `¡Hola! Soy tu tutor oral de ${subject}. ¿Qué tema te gustaría repasar hoy en voz alta?`;
     
-    // In a real implementation, we would set up the full AudioContext and WebSocket 
-    // stream as per the Live API guidelines. This is a simplified UI representation.
-    setTimeout(() => {
-        setTranscription('¡Hola! Soy tu tutor de ' + subject + '. ¿Qué te gustaría practicar hoy hablando?');
-    }, 1500);
+    speakTutorResponse(welcomeMsg);
+
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      try {
+        const recognition = new SpeechRecognition();
+        recognitionRef.current = recognition;
+        recognition.lang = subject === 'Inglés' ? 'en-US' : 'es-ES';
+        recognition.continuous = true;
+        recognition.interimResults = true;
+
+        recognition.onresult = (event: any) => {
+          let currentSpoken = '';
+          for (let i = 0; i < event.results.length; i++) {
+            currentSpoken += event.results[i][0].transcript + ' ';
+          }
+          const clean = currentSpoken.trim();
+          setSpokenText(clean);
+          setTranscription(`Te estoy escuchando: "${clean}"`);
+        };
+
+        recognition.onerror = (e: any) => {
+          console.warn("Oral practice recognition notice:", e.error);
+        };
+
+        recognition.onend = () => {
+          if (isActive) {
+            try { recognition.start(); } catch (_) {}
+          }
+        };
+
+        recognition.start();
+      } catch (err) {
+        console.error("Speech recognition startup error:", err);
+      }
+    }
   };
 
   const stopSession = () => {
     setIsActive(false);
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+    }
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+
     const duration = startTimeRef.current ? Math.floor((Date.now() - startTimeRef.current) / 1000) : 0;
     
     // Log activity for parent monitoring
@@ -39,12 +93,11 @@ const OralPractice: React.FC<OralPracticeProps> = ({ grade, subject, onActivityL
         type: 'oral_practice',
         subject,
         duration,
-        transcription: transcription
+        transcription: spokenText || transcription
       });
     }
     
-    setTranscription('');
-    if (sessionRef.current) sessionRef.current.close();
+    setTranscription(spokenText ? `¡Excelente práctica! Has dicho: "${spokenText}"` : 'Sesión finalizada.');
   };
 
   return (

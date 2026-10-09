@@ -94,6 +94,27 @@ const Header: React.FC<HeaderProps> = ({ viewMode, setViewMode, userRole, active
           ✍️ Caligrafía
         </button>
         <button
+          onClick={() => setViewMode('math')}
+          className={`px-4 py-2 rounded-xl text-xs font-black transition-all ${
+            viewMode === 'math' ? 'bg-white text-orange-600 shadow-sm' : 'text-orange-500 hover:text-orange-700'
+          }`}
+        >
+          🔢 Mates
+        </button>
+        <button
+          onClick={() => setViewMode('worksheets')}
+          className={`px-3.5 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 ${
+            viewMode === 'worksheets'
+              ? 'bg-emerald-600 text-white shadow-md ring-2 ring-emerald-400' 
+              : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 shadow-xs'
+          }`}
+          title="Fichas A4 imprimibles y escaneo de deberes de clase con corrección, guía explicativa y refuerzo con IA"
+        >
+          <span>🎒</span>
+          <span>Deberes & Fichas A4</span>
+          <span className="bg-emerald-200 text-emerald-800 text-[9px] px-1 py-0.2 rounded font-extrabold hidden sm:inline">IA</span>
+        </button>
+        <button
           onClick={() => setViewMode('parent')}
           className={`px-4 py-2 rounded-xl text-xs font-black transition-all ${
             viewMode === 'parent' ? 'bg-white text-blue-600 shadow-sm' : 'text-blue-500 hover:text-blue-700'
