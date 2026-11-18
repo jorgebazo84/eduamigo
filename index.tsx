@@ -1,6 +1,6 @@
 if (typeof window !== 'undefined') {
   (window as any).process = (window as any).process || {
-    env: { NODE_ENV: 'development', GEMINI_API_KEY: '' },
+    env: { NODE_ENV: 'development' },
     stderr: null,
     stdout: null,
     browser: true,

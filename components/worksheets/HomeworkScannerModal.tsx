@@ -1,3 +1,4 @@
+import ReportErrorButton from '../ReportErrorButton';
 import React, { useState, useRef } from 'react';
 import { Child } from '../../types';
 import { Book } from '../../types/study';
@@ -14,6 +15,9 @@ interface HomeworkScannerModalProps {
   onOpenRemedialGuide?: (record: ScannedHomeworkRecord) => void;
   onOpenReinforcementWorksheet?: (worksheetId: string) => void;
   onAwardPoints?: (childId: string, points: number) => void;
+  /** Foto ya hecha (desde el botón "Hago una foto") */
+  initialImage?: string | null;
+  isDemo?: boolean;
 }
 
 export const HomeworkScannerModal: React.FC<HomeworkScannerModalProps> = ({
@@ -26,6 +30,8 @@ export const HomeworkScannerModal: React.FC<HomeworkScannerModalProps> = ({
   onOpenRemedialGuide,
   onOpenReinforcementWorksheet,
   onAwardPoints,
+  initialImage = null,
+  isDemo,
 }) => {
   const [childId, setChildId] = useState<string>(
     selectedChildId || childrenList[0]?.id || ''
@@ -37,7 +43,7 @@ export const HomeworkScannerModal: React.FC<HomeworkScannerModalProps> = ({
   const [interestLevel, setInterestLevel] = useState<'muy_motivado' | 'positivo' | 'le_cuesta_o_bloqueo'>('positivo');
   const [childSelfReflection, setChildSelfReflection] = useState<string>('');
 
-  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(initialImage);
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingStep, setProcessingStep] = useState<string>('');
   const [correctionResult, setCorrectionResult] = useState<ScannedHomeworkRecord | null>(null);
@@ -130,13 +136,8 @@ export const HomeworkScannerModal: React.FC<HomeworkScannerModalProps> = ({
 
     try {
       const record = await worksheetService.correctHomeworkPhoto({
-        child: {
-          id: currentChild.id,
-          name: currentChild.name,
-          grade: currentChild.grade,
-        },
+        childId: currentChild.id,
         subject,
-        grade: currentChild.grade,
         bookTitle: selectedBook || undefined,
         notes: parentNotes || undefined,
         imageBase64: imagePreview,
@@ -164,8 +165,8 @@ export const HomeworkScannerModal: React.FC<HomeworkScannerModalProps> = ({
         onAwardPoints(record.childId, record.awardedXp);
       }
     } catch (err: any) {
-      console.error('Error analyzing homework:', err);
-      setError('Ocurrió un error al procesar la imagen con la IA. Por favor, asegúrate de que la foto tenga buena iluminación y vuelve a intentarlo.');
+      // El servidor explica qué ha pasado (sin conexión, límite diario, foto ilegible, IA no disponible…)
+      setError(err?.message || 'No se han podido corregir los deberes. Inténtalo de nuevo.');
     } finally {
       clearTimeout(stepTimer1);
       clearTimeout(stepTimer2);
@@ -178,20 +179,16 @@ export const HomeworkScannerModal: React.FC<HomeworkScannerModalProps> = ({
     if (!imagePreview || !currentChild) return;
     setIsProcessing(true);
     setError(null);
-    setProcessingStep('Reevaluando con tus aclaraciones confirmadas (100% rigor sin inventos)...');
+    setProcessingStep('Volviendo a corregir con tus aclaraciones...');
 
     try {
+      // Reutiliza la foto ya guardada en el servidor (no cuenta en el límite diario)
       const record = await worksheetService.correctHomeworkPhoto({
-        child: {
-          id: currentChild.id,
-          name: currentChild.name,
-          grade: currentChild.grade,
-        },
+        childId: currentChild.id,
+        homeworkId: pendingClarificationRecord?.id,
         subject,
-        grade: currentChild.grade,
         bookTitle: selectedBook || undefined,
         notes: parentNotes || undefined,
-        imageBase64: imagePreview,
         completedByStudent: isStudent,
         effortLevel,
         interestLevel,
@@ -207,8 +204,7 @@ export const HomeworkScannerModal: React.FC<HomeworkScannerModalProps> = ({
         onAwardPoints(record.childId, record.awardedXp);
       }
     } catch (err: any) {
-      console.error('Error applying clarifications:', err);
-      setError('Ocurrió un error al aplicar las aclaraciones. Se mostrará el borrador inicial.');
+      setError(err?.message || 'No se han podido aplicar las aclaraciones. Se muestra el borrador inicial.');
       if (pendingClarificationRecord) {
         setCorrectionResult(pendingClarificationRecord);
         setPendingClarificationRecord(null);
@@ -229,19 +225,30 @@ export const HomeworkScannerModal: React.FC<HomeworkScannerModalProps> = ({
     }
   };
 
-  const handleSaveInlineClarification = (exerciseIndex: number) => {
+  // "¿La IA leyó mal este trazo?": se vuelve a corregir con la lectura buena (sin nueva foto)
+  const handleSaveInlineClarification = async (exerciseIndex: number) => {
     if (!correctionResult || !editingExerciseText.trim()) return;
-    const updated = worksheetService.clarifyExerciseReading(
-      correctionResult.id,
-      exerciseIndex,
-      editingExerciseText.trim()
-    );
-    if (updated) {
+    const clarifications: Record<number, string> = {};
+    correctionResult.exercises.forEach((e) => { if (e.userClarification) clarifications[e.index] = e.userClarification; });
+    clarifications[exerciseIndex] = editingExerciseText.trim();
+    setIsProcessing(true);
+    setError(null);
+    setProcessingStep('Volviendo a corregir con la lectura buena…');
+    try {
+      const updated = await worksheetService.correctHomeworkPhoto({
+        childId: correctionResult.childId,
+        homeworkId: correctionResult.id,
+        userClarifications: clarifications,
+      });
       setCorrectionResult({ ...updated });
       onCorrectionComplete(updated);
+    } catch (err: any) {
+      setError(err?.message || 'No se ha podido volver a corregir.');
+    } finally {
+      setIsProcessing(false);
+      setEditingExerciseIndex(null);
+      setEditingExerciseText('');
     }
-    setEditingExerciseIndex(null);
-    setEditingExerciseText('');
   };
 
   return (
@@ -269,6 +276,7 @@ export const HomeworkScannerModal: React.FC<HomeworkScannerModalProps> = ({
               stopCamera();
               onClose();
             }}
+            aria-label="Cerrar"
             className="text-slate-400 hover:text-slate-600 font-black p-2 text-lg rounded-xl hover:bg-slate-100 transition-colors"
           >
             ✕
@@ -292,12 +300,12 @@ export const HomeworkScannerModal: React.FC<HomeworkScannerModalProps> = ({
                   <h4 className="text-base font-black text-amber-950">
                     {isStudent
                       ? '¡La IA tiene dudas con algunos trazos y no quiere inventarse nada!'
-                      : 'Dudas de lectura detectadas: Protocolo de Cero Invención'}
+                      : 'Dudas de lectura: confírmalas antes de corregir'}
                   </h4>
                   <p className="text-xs text-amber-900 mt-0.5">
                     {isStudent
                       ? 'Para no bajarte nota por error ni inventarnos lo que pusiste, ¿puedes decirnos qué pone en estos ejercicios?'
-                      : 'La IA ha detectado trazos confusos, números borrosos o tachones. Para garantizar 100% de rigor pedagógico sin alucinaciones, por favor aclara los siguientes puntos:'}
+                      : 'La IA ha detectado trazos confusos, números borrosos o tachones. Para no corregir algo que no has escrito, aclara estos puntos:'}
                   </p>
                 </div>
               </div>
@@ -693,6 +701,7 @@ export const HomeworkScannerModal: React.FC<HomeworkScannerModalProps> = ({
              VISTA DE RESULTADOS DE LA CORRECCIÓN CON LOS DOS DOCUMENTOS GENERADOS
              ========================================================================= */
           <div className="space-y-6 animate-in fade-in duration-300">
+            <ReportErrorButton childId={correctionResult.childId} kind="homework" refId={correctionResult.id} isDemo={isDemo} className="text-right" />
             {/* Tarjeta de Calificación y XP */}
             <div className="bg-gradient-to-r from-emerald-500 to-teal-600 rounded-3xl p-6 text-white shadow-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
               <div className="space-y-1">
@@ -856,12 +865,19 @@ export const HomeworkScannerModal: React.FC<HomeworkScannerModalProps> = ({
                         </span>
                         {ex.studentAnswer}
                       </div>
-                      <div className="bg-white/80 p-2 rounded-xl border border-slate-200 text-emerald-800">
-                        <span className="font-sans font-bold text-[9px] text-emerald-600 uppercase block">
-                          Solución esperada:
-                        </span>
-                        {ex.correctSolution}
-                      </div>
+                      {ex.correctSolution ? (
+                        <div className="bg-white/80 p-2 rounded-xl border border-slate-200 text-emerald-800">
+                          <span className="font-sans font-bold text-[9px] text-emerald-600 uppercase block">
+                            Solución esperada:
+                          </span>
+                          {ex.correctSolution}
+                        </div>
+                      ) : ex.status !== 'correct' && (ex as any).hint ? (
+                        <div className="bg-amber-50 p-2 rounded-xl border border-amber-200 text-amber-900 font-sans font-bold">
+                          <span className="text-[9px] text-amber-600 uppercase block">Pista para que lo vuelvas a intentar:</span>
+                          {(ex as any).hint}
+                        </div>
+                      ) : null}
                     </div>
 
                     {ex.rootError && (
@@ -870,9 +886,11 @@ export const HomeworkScannerModal: React.FC<HomeworkScannerModalProps> = ({
                       </p>
                     )}
 
-                    <p className="text-[11px] text-slate-700 mt-1">
-                      💡 {ex.teacherExplanation}
-                    </p>
+                    {ex.teacherExplanation && (
+                      <p className="text-[11px] text-slate-700 mt-1">
+                        💡 {ex.teacherExplanation}
+                      </p>
+                    )}
 
                     {/* Alerta de duda de caligrafía o trazo dudoso */}
                     {ex.isAmbiguousOrUnclear && (
@@ -898,7 +916,7 @@ export const HomeworkScannerModal: React.FC<HomeworkScannerModalProps> = ({
                     {ex.userClarification && (
                       <div className="mt-2 text-[10px] font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg px-2.5 py-1 flex items-center justify-between">
                         <span>✨ Aclarado por el alumno/tutor: <strong>"{ex.userClarification}"</strong></span>
-                        <span className="text-[9px] uppercase tracking-wider text-emerald-700 font-black">Cero Alucinaciones</span>
+                        <span className="text-[9px] uppercase tracking-wider text-emerald-700 font-black">Lectura confirmada</span>
                       </div>
                     )}
 

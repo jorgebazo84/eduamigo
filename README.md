@@ -15,6 +15,6 @@ View your app in AI Studio: https://ai.studio/apps/c49377cc-19f4-497d-9fea-ead2d
 
 1. Install dependencies:
    `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+2. Copia `.env.example` a `.env` y pon tu `ANTHROPIC_API_KEY` (tutor Pregúntame).
 3. Run the app:
    `npm run dev`

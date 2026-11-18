@@ -1,37 +1,35 @@
-
-import React, { useState } from 'react';
-import { HistoryItem, ExamResult, Child, Reward, GradeLevel, CalendarEvent, Task, StudentRequest, SchoolCommunication, QuickNote, LocationState, Coordinate, AcademicGrade, StudyPlan, AICorrection, DailyStudyReport, ReviewPlan } from '../types';
+import React, { useState, useEffect } from 'react';
+import { Child, Reward, GradeLevel, CalendarEvent, Task } from '../types';
+import ParentTutorPanel from './ParentTutorPanel';
 import AgendaManager from './AgendaManager';
-import RequestManager from './RequestManager';
-import SchoolHub from './SchoolHub';
 import ChildManager from './ChildManager';
 import RewardManager from './RewardManager';
-import LocationHub from './LocationHub';
+import ParentRewardsPanel from './rewards/ParentRewardsPanel';
+import { rewardsService } from '../services/rewardsService';
 import CalligraphyHistory from './CalligraphyHistory';
-import ReadingHistory from './ReadingHistory';
-import MathHistory from './MathHistory';
+import ReadingStatsPanel from './ReadingStatsPanel';
+import MathStatsPanel from './MathStatsPanel';
 import EnglishHistory from './english/EnglishHistory';
-import SRSHistory from './SRSHistory';
-import GradeManager from './GradeManager';
-import AICorrectionManager from './AICorrectionManager';
-import ParentReviewManager from './ParentReviewManager';
-import AcademicReportPDF from './AcademicReportPDF';
+import GamesParentPanel from './parent/GamesParentPanel';
+import ParentReviewPanel from './review/ParentReviewPanel';
 import { WorksheetHub } from './worksheets/WorksheetHub';
-import { HomeworkTrackingPanel } from './HomeworkTrackingPanel';
+import ParentOverview from './parent/ParentOverview';
+import ParentReport from './parent/ParentReport';
+import SchoolGradesPanel from './parent/SchoolGradesPanel';
+import SentReportsPanel from './parent/SentReportsPanel';
+import StudyModuleContainer from './StudyModuleContainer';
+import CircularScanner from './parent/CircularScanner';
+
+type Tab = 'summary' | 'worksheets' | 'progress' | 'rewards' | 'family';
+type Area = 'reading' | 'math' | 'review' | 'calligraphy' | 'english' | 'tutor' | 'games';
+type FamilySection = 'children' | 'agenda' | 'grades' | 'books' | 'reports';
 
 interface ParentDashboardProps {
   userId: string;
-  history: HistoryItem[];
-  examHistory: ExamResult[];
   children: Child[];
   rewards: Reward[];
   events: CalendarEvent[];
   tasks: Task[];
-  requests: StudentRequest[];
-  communications: SchoolCommunication[];
-  quickNotes: QuickNote[];
-  locationStates: LocationState[];
-  onSelectItem: (item: HistoryItem) => void;
   onAddChild: (name: string, grade: GradeLevel, avatar: string) => void;
   onUpdateChild: (id: string, name: string, grade: GradeLevel, avatar: string) => void;
   onDeleteChild: (id: string) => void;
@@ -41,322 +39,195 @@ interface ParentDashboardProps {
   onAddTask: (task: Omit<Task, 'id'>) => void;
   onToggleTask: (id: string) => void;
   onDeleteTask: (id: string) => void;
-  onApproveRequest: (requestId: string, dueDate: string) => void;
-  onRejectRequest: (requestId: string) => void;
-  onUpdateTask: (taskId: string, updates: Partial<Task>) => void;
-  onAddQuickNote: (note: Omit<QuickNote, 'id' | 'timestamp'>) => void;
-  onDeleteQuickNote: (id: string) => void;
-  onSyncSchoolComms: () => void;
-  onMarkCommRead: (id: string) => void;
-  onToggleTracking: (id: string) => void;
-  onSetLocationPoint: (id: string, type: 'home' | 'school', coord: Coordinate, address?: string) => void;
-  onSearchAddress: (childId: string, address: string, type: 'home' | 'school') => Promise<string | null>;
-  onReverseGeocode: (childId: string, coord: Coordinate, type: 'home' | 'school') => Promise<string>;
-  academicGrades: AcademicGrade[];
-  onAddGrade: (grade: Omit<AcademicGrade, 'id' | 'timestamp'>) => void;
-  onDeleteGrade: (id: string) => void;
-  onSetReinforcementPlan: (childId: string, plan: StudyPlan) => void;
-  aiCorrections: AICorrection[];
-  onAddAICorrection: (correction: Omit<AICorrection, 'id' | 'timestamp'>) => void;
-  onDeleteAICorrection: (id: string) => void;
-  dailyReports: DailyStudyReport[];
-  reviewPlans: ReviewPlan[];
   books: any[];
-  onCreateReviewPlan: (plan: Omit<ReviewPlan, 'id' | 'status'>) => void;
   onAwardPointsToChild?: (childId: string, points: number) => void;
+  /** Pestaña con la que se abre el panel ('children' = Familia → Hijos, 'worksheets'…) */
+  initialTab?: string;
+  onChangePin?: () => void;
+  isDemo?: boolean;
+  tutorAlerts?: number;
+  onTutorAlertsSeen?: () => void;
+  onChildPointsChanged?: (childId: string, newPoints: number) => void;
+  /** Volver a la app del niño */
+  onExit?: () => void;
 }
 
-const ParentDashboard: React.FC<ParentDashboardProps> = ({ 
-  userId, history, examHistory, children, rewards, events, tasks, requests, communications, quickNotes, locationStates,
-  onSelectItem, onAddChild, onUpdateChild, onDeleteChild, onUpdateRewards, onAddEvent, onDeleteEvent, onAddTask, onToggleTask, onDeleteTask,
-  onApproveRequest, onRejectRequest, onUpdateTask, onAddQuickNote, onDeleteQuickNote, onSyncSchoolComms, onMarkCommRead,
-  onToggleTracking, onSetLocationPoint, onSearchAddress, onReverseGeocode,
-  academicGrades, onAddGrade, onDeleteGrade, onSetReinforcementPlan,
-  aiCorrections, onAddAICorrection, onDeleteAICorrection,
-  dailyReports, reviewPlans, books, onCreateReviewPlan, onAwardPointsToChild
+const AREAS: { id: Area; label: string }[] = [
+  { id: 'reading', label: '📖 Lectura' }, { id: 'math', label: '🔢 Mates' }, { id: 'review', label: '🧠 Repasar' },
+  { id: 'calligraphy', label: '✍️ Caligrafía' }, { id: 'english', label: '🇬🇧 Inglés' }, { id: 'tutor', label: '💬 Tutor' }, { id: 'games', label: '🎮 Juegos' },
+];
+const FAMILY: { id: FamilySection; label: string }[] = [
+  { id: 'children', label: '👥 Hijos y PIN' }, { id: 'agenda', label: '🗓️ Agenda y exámenes' },
+  { id: 'grades', label: '📝 Notas del cole' }, { id: 'books', label: '📚 Libros del cole' }, { id: 'reports', label: '🚩 Avisos de errores' },
+];
+
+const mapInitial = (t?: string): { tab: Tab; family?: FamilySection } => {
+  if (t === 'children') return { tab: 'family', family: 'children' };
+  if (t === 'worksheets') return { tab: 'worksheets' };
+  if (t === 'rewards') return { tab: 'rewards' };
+  return { tab: 'summary' };
+};
+
+const ParentDashboard: React.FC<ParentDashboardProps> = ({
+  userId, children, rewards, events, tasks,
+  onAddChild, onUpdateChild, onDeleteChild, onUpdateRewards, onAddEvent, onDeleteEvent, onAddTask, onToggleTask, onDeleteTask,
+  books, onAwardPointsToChild, initialTab, onChangePin, isDemo, tutorAlerts = 0, onTutorAlertsSeen, onChildPointsChanged, onExit,
 }) => {
-  const [activeTab, setActiveTab] = useState<'stats' | 'reports' | 'worksheets' | 'homework-tracking' | 'children' | 'rewards' | 'agenda' | 'inbox' | 'school' | 'location' | 'calligraphy' | 'reading' | 'math' | 'english' | 'grades' | 'ai-corrections' | 'daily-review' | 'srs'>('stats');
+  const init = mapInitial(initialTab);
+  const [tab, setTab] = useState<Tab>(init.tab);
+  const [area, setArea] = useState<Area>('reading');
+  const [family, setFamily] = useState<FamilySection>(init.family || 'children');
   const [selectedChildId, setSelectedChildId] = useState<string>(children[0]?.id || '');
-  
-  const pendingRequestsCount = requests.filter(r => r.status === 'pending').length;
-  const unreadCommsCount = communications.filter(c => !c.isRead).length;
-  const activeTrackingCount = locationStates.filter(s => s.isTracking).length;
+  const [reportFor, setReportFor] = useState<string | null>(null);
+  const [pendingRewards, setPendingRewards] = useState<{ total: number; byChild: Record<string, number> }>({ total: 0, byChild: {} });
+
+  const refreshPendingRewards = () => {
+    if (isDemo) return;
+    rewardsService.pendingRequests().then(setPendingRewards).catch(() => {});
+  };
+  useEffect(() => { refreshPendingRewards(); }, [isDemo]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!children.find((c) => c.id === selectedChildId)) setSelectedChildId(children[0]?.id || '');
+  }, [children, selectedChildId]);
+
+  const selected = children.find((c) => c.id === selectedChildId) || null;
+
+  const goTo = (t: 'rewards' | 'progress' | 'family' | 'worksheets', childId: string, sub?: string) => {
+    if (childId) setSelectedChildId(childId);
+    if (t === 'progress' && sub) setArea(sub as Area);
+    if (t === 'family') setFamily((sub as FamilySection) || 'children');
+    setTab(t);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const tabBtn = (id: Tab, label: string, badge = 0) => (
+    <button key={id} onClick={() => setTab(id)} data-testid={`ptab-${id}`}
+      className={`relative shrink-0 px-4 md:px-5 py-2.5 rounded-xl text-xs md:text-sm font-black transition-all ${tab === id ? 'bg-white text-blue-700 shadow-sm' : 'text-blue-500 hover:text-blue-700'}`}>
+      {label}
+      {badge > 0 && <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] min-w-5 h-5 px-1 rounded-full flex items-center justify-center" data-testid={id === 'rewards' ? 'pending-rewards-badge' : undefined}>{badge}</span>}
+    </button>
+  );
+
+  const childPicker = (color = 'bg-blue-600') => children.length > 1 && (
+    <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar" data-testid="child-picker">
+      {children.map((child) => (
+        <button key={child.id} onClick={() => setSelectedChildId(child.id)}
+          className={`relative flex-shrink-0 px-4 py-2 rounded-full text-xs font-black transition-all ${selectedChildId === child.id ? `${color} text-white shadow-md` : 'bg-white border border-slate-200 text-slate-500'}`}>
+          {child.avatar} {child.name}
+          {tab === 'rewards' && (pendingRewards.byChild[child.id] || 0) > 0 && <span className="ml-2 bg-red-500 text-white rounded-full px-1.5">{pendingRewards.byChild[child.id]}</span>}
+        </button>
+      ))}
+    </div>
+  );
+
+  const subBtn = (active: boolean, onClick: () => void, label: string, key: string) => (
+    <button key={key} onClick={onClick} data-testid={`sub-${key}`}
+      className={`shrink-0 px-4 py-2 rounded-xl text-xs font-black transition-all ${active ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'}`}>{label}</button>
+  );
 
   return (
-    <div className="space-y-8 pb-10 animate-in fade-in duration-500">
-      <div className="flex flex-wrap gap-2 p-1 bg-blue-100 rounded-2xl w-fit">
-        <button onClick={() => setActiveTab('stats')} className={`px-4 md:px-6 py-2 rounded-xl text-xs font-black transition-all ${activeTab === 'stats' ? 'bg-white text-blue-600 shadow-sm' : 'text-blue-500'}`}>📊 Stats</button>
-        <button onClick={() => setActiveTab('reports')} className={`px-4 md:px-6 py-2 rounded-xl text-xs font-black transition-all ${activeTab === 'reports' ? 'bg-white text-indigo-600 shadow-sm' : 'text-indigo-600 font-bold hover:bg-blue-200/50'}`}>📄 Informes PDF</button>
-        <button onClick={() => setActiveTab('homework-tracking')} className={`px-4 md:px-6 py-2 rounded-xl text-xs font-black transition-all ${activeTab === 'homework-tracking' ? 'bg-white text-emerald-700 shadow-sm' : 'text-emerald-700 font-bold hover:bg-blue-200/50'}`}>🎒 Deberes & Esfuerzo</button>
-        <button onClick={() => setActiveTab('worksheets')} className={`px-4 md:px-6 py-2 rounded-xl text-xs font-black transition-all ${activeTab === 'worksheets' ? 'bg-white text-blue-700 shadow-sm' : 'text-blue-700 font-bold hover:bg-blue-200/50'}`}>📑 Fichas Imprimibles</button>
-        <button onClick={() => setActiveTab('calligraphy')} className={`px-4 md:px-6 py-2 rounded-xl text-xs font-black transition-all ${activeTab === 'calligraphy' ? 'bg-white text-indigo-600 shadow-sm' : 'text-indigo-500'}`}>✍️ Caligrafía</button>
-        <button onClick={() => setActiveTab('reading')} className={`px-4 md:px-6 py-2 rounded-xl text-xs font-black transition-all ${activeTab === 'reading' ? 'bg-white text-blue-600 shadow-sm' : 'text-blue-500'}`}>📖 Lectura</button>
-        <button onClick={() => setActiveTab('math')} className={`px-4 md:px-6 py-2 rounded-xl text-xs font-black transition-all ${activeTab === 'math' ? 'bg-white text-orange-600 shadow-sm' : 'text-orange-500'}`}>🔢 Mates</button>
-        <button onClick={() => setActiveTab('english')} className={`px-4 md:px-6 py-2 rounded-xl text-xs font-black transition-all ${activeTab === 'english' ? 'bg-white text-blue-600 shadow-sm' : 'text-blue-500'}`}>🇬🇧 Inglés</button>
-        <button onClick={() => setActiveTab('grades')} className={`px-4 md:px-6 py-2 rounded-xl text-xs font-black transition-all ${activeTab === 'grades' ? 'bg-white text-blue-600 shadow-sm' : 'text-blue-500'}`}>📝 Notas</button>
-        <button onClick={() => setActiveTab('srs')} className={`px-4 md:px-6 py-2 rounded-xl text-xs font-black transition-all ${activeTab === 'srs' ? 'bg-white text-orange-600 shadow-sm' : 'text-orange-500'}`}>🧠 SRS</button>
-        <button onClick={() => setActiveTab('daily-review')} className={`px-4 md:px-6 py-2 rounded-xl text-xs font-black transition-all ${activeTab === 'daily-review' ? 'bg-white text-indigo-600 shadow-sm' : 'text-indigo-500'}`}>🧠 Repaso Diario</button>
-        <button onClick={() => setActiveTab('ai-corrections')} className={`px-4 md:px-6 py-2 rounded-xl text-xs font-black transition-all ${activeTab === 'ai-corrections' ? 'bg-white text-indigo-600 shadow-sm' : 'text-indigo-500'}`}>🧠 Corrección IA</button>
-        <button onClick={() => setActiveTab('school')} className={`relative px-4 md:px-6 py-2 rounded-xl text-xs font-black transition-all ${activeTab === 'school' ? 'bg-white text-indigo-600 shadow-sm' : 'text-indigo-500'}`}>
-          🏫 Escuela
-          {unreadCommsCount > 0 && <span className="absolute -top-1 -right-1 bg-indigo-600 text-white text-[8px] w-4 h-4 rounded-full flex items-center justify-center font-black">{unreadCommsCount}</span>}
-        </button>
-        <button onClick={() => setActiveTab('location')} className={`relative px-4 md:px-6 py-2 rounded-xl text-xs font-black transition-all ${activeTab === 'location' ? 'bg-white text-indigo-600 shadow-sm' : 'text-indigo-500'}`}>
-          🚶 Rutas
-          {activeTrackingCount > 0 && <span className="absolute -top-1 -right-1 bg-green-500 text-white text-[8px] w-4 h-4 rounded-full flex items-center justify-center font-black animate-pulse">●</span>}
-        </button>
-        <button onClick={() => setActiveTab('inbox')} className={`relative px-4 md:px-6 py-2 rounded-xl text-xs font-black transition-all ${activeTab === 'inbox' ? 'bg-white text-blue-600 shadow-sm' : 'text-blue-500'}`}>
-          📥 Peticiones
-          {pendingRequestsCount > 0 && <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[8px] w-4 h-4 rounded-full flex items-center justify-center font-black animate-pulse">{pendingRequestsCount}</span>}
-        </button>
-        <button onClick={() => setActiveTab('agenda')} className={`px-4 md:px-6 py-2 rounded-xl text-xs font-black transition-all ${activeTab === 'agenda' ? 'bg-white text-blue-600 shadow-sm' : 'text-blue-500'}`}>🗓️ Agenda</button>
-        <button onClick={() => setActiveTab('children')} className={`px-4 md:px-6 py-2 rounded-xl text-xs font-black transition-all ${activeTab === 'children' ? 'bg-white text-blue-600 shadow-sm' : 'text-blue-500'}`}>👥 Hijos</button>
-        <button onClick={() => setActiveTab('rewards')} className={`px-4 md:px-6 py-2 rounded-xl text-xs font-black transition-all ${activeTab === 'rewards' ? 'bg-white text-blue-600 shadow-sm' : 'text-blue-500'}`}>🎁 Premios</button>
+    <div className="space-y-6 pb-10 animate-in fade-in duration-500" data-testid="parent-dashboard">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h2 className="text-2xl font-black text-blue-900">Panel de padres</h2>
+          <p className="text-xs font-bold text-slate-400">Solo vosotros podéis ver esta zona.</p>
+        </div>
+        {onExit && (
+          <button onClick={onExit} className="bg-white border-2 border-blue-100 text-blue-700 px-4 py-2 rounded-xl text-xs font-black hover:border-blue-300" data-testid="exit-parent">
+            ← Volver a la app de mi hijo
+          </button>
+        )}
       </div>
 
-      {activeTab === 'stats' && (
+      <div className="flex gap-1 overflow-x-auto no-scrollbar bg-blue-100/60 p-1.5 rounded-2xl" role="tablist">
+        {tabBtn('summary', '📋 Resumen', tutorAlerts)}
+        {tabBtn('worksheets', '📑 Fichas y deberes')}
+        {tabBtn('progress', '📈 Progreso')}
+        {tabBtn('rewards', '🎁 Puntos y premios', pendingRewards.total)}
+        {tabBtn('family', '👨‍👩‍👧 Familia')}
+      </div>
+
+      {tab === 'summary' && (
+        <ParentOverview children={children} isDemo={!!isDemo} onGoTo={goTo} onOpenReport={(id) => setReportFor(id)} />
+      )}
+
+      {tab === 'worksheets' && (
+        <WorksheetHub childrenList={children} books={books} userRole={isDemo ? 'demo' : 'parent'} isParentUnlocked={true} isDemo={isDemo} onAwardPoints={onAwardPointsToChild} />
+      )}
+
+      {tab === 'progress' && (
+        <div className="space-y-4 animate-in fade-in">
+          {childPicker()}
+          <div className="flex gap-2 overflow-x-auto no-scrollbar">
+            {AREAS.map((a) => subBtn(area === a.id, () => setArea(a.id), a.label, a.id))}
+          </div>
+          {selected && area === 'reading' && <ReadingStatsPanel key={selected.id} childId={selected.id} isDemo={!!isDemo} />}
+          {selected && area === 'math' && <MathStatsPanel key={selected.id} childId={selected.id} grade={selected.grade} isDemo={!!isDemo} />}
+          {selected && area === 'review' && <ParentReviewPanel key={selected.id} children={[selected]} isDemo={!!isDemo} />}
+          {selected && area === 'calligraphy' && <CalligraphyHistory key={selected.id} childId={selected.id} isDemo={!!isDemo} />}
+          {selected && area === 'english' && <EnglishHistory key={selected.id} childId={selected.id} isDemo={!!isDemo} />}
+          {selected && area === 'games' && <GamesParentPanel key={selected.id} childId={selected.id} childName={selected.name} isDemo={!!isDemo} />}
+          {selected && area === 'tutor' && <ParentTutorPanel key={selected.id} children={[selected]} isDemo={!!isDemo} onAlertsSeen={onTutorAlertsSeen} />}
+          {!selected && <p className="text-sm text-slate-500">Añade un hijo en Familia para ver su progreso.</p>}
+        </div>
+      )}
+
+      {tab === 'rewards' && (
         <div className="space-y-8 animate-in fade-in">
-           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="bg-white p-8 rounded-[2rem] border border-blue-50 shadow-sm">
-              <p className="text-blue-400 text-[10px] font-black uppercase mb-1">Consultas IA</p>
-              <p className="text-4xl font-black text-blue-900">{history.length}</p>
-            </div>
-            <div className="bg-indigo-600 p-8 rounded-[2rem] shadow-xl text-white">
-              <p className="text-indigo-100 text-[10px] font-black uppercase mb-1">Exámenes</p>
-              <p className="text-4xl font-black">{examHistory.length}</p>
-            </div>
-            <div className="bg-white p-8 rounded-[2rem] border border-blue-50 shadow-sm text-center">
-              <p className="text-blue-400 text-[10px] font-black uppercase mb-1">Total Puntos</p>
-              <p className="text-4xl font-black text-yellow-600">⭐ {children.reduce((acc, c) => acc + c.points, 0)}</p>
-            </div>
-          </div>
+          {childPicker('bg-amber-500')}
+          {selected && (
+            <ParentRewardsPanel key={selected.id} childId={selected.id} childName={selected.name} isDemo={!!isDemo}
+              onPointsChanged={(cid, np) => { onChildPointsChanged?.(cid, np); refreshPendingRewards(); }} />
+          )}
+          <RewardManager rewards={rewards} onUpdateRewards={onUpdateRewards} />
         </div>
       )}
 
-      {activeTab === 'reports' && (
-        <AcademicReportPDF
-          children={children}
-          history={history}
-          examHistory={examHistory}
-          academicGrades={academicGrades}
-          dailyReports={dailyReports}
-        />
-      )}
-
-      {activeTab === 'homework-tracking' && (
-        <HomeworkTrackingPanel
-          childrenList={children}
-          onAwardPoints={onAwardPointsToChild}
-        />
-      )}
-
-      {activeTab === 'worksheets' && (
-        <WorksheetHub
-          childrenList={children}
-          books={books}
-          userRole="parent"
-          isParentUnlocked={true}
-          onAwardPoints={onAwardPointsToChild}
-        />
-      )}
-
-      {activeTab === 'calligraphy' && (
-        <div className="space-y-6 animate-in fade-in">
-          <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar">
-            {children.map(child => (
-              <button
-                key={child.id}
-                onClick={() => setSelectedChildId(child.id)}
-                className={`flex-shrink-0 px-4 py-2 rounded-full text-xs font-black transition-all ${
-                  selectedChildId === child.id 
-                  ? 'bg-indigo-600 text-white shadow-md' 
-                  : 'bg-white border border-slate-200 text-slate-500'
-                }`}
-              >
-                {child.avatar} {child.name}
-              </button>
-            ))}
+      {tab === 'family' && (
+        <div className="space-y-5 animate-in fade-in">
+          <div className="flex gap-2 overflow-x-auto no-scrollbar">
+            {FAMILY.map((f) => subBtn(family === f.id, () => setFamily(f.id), f.label, f.id))}
           </div>
-          {selectedChildId && <CalligraphyHistory userId={userId} childId={selectedChildId} />}
+          {family === 'children' && (
+            <>
+              {onChangePin && (
+                <div className="flex items-center justify-between bg-indigo-50 border border-indigo-100 rounded-2xl px-5 py-4">
+                  <div>
+                    <p className="text-sm font-black text-indigo-900">PIN de padres</p>
+                    <p className="text-[11px] font-bold text-indigo-400">Protege esta zona. Se pide cada vez que entráis.</p>
+                  </div>
+                  <button onClick={onChangePin} className="bg-white text-indigo-600 border-2 border-indigo-100 px-4 py-2 rounded-xl text-xs font-black hover:border-indigo-300">Cambiar PIN</button>
+                </div>
+              )}
+              <ChildManager children={children} onAddChild={onAddChild} onUpdateChild={onUpdateChild} onDeleteChild={onDeleteChild} />
+            </>
+          )}
+          {family === 'agenda' && (
+            <>
+              <p className="text-xs text-slate-500 bg-blue-50 rounded-xl px-4 py-2">Los exámenes que apuntéis aquí hacen que Repasar adelante ese tema para llegar preparado.</p>
+              <CircularScanner children={children} isDemo={!!isDemo} onAddEvent={onAddEvent} />
+              <AgendaManager children={children} events={events} tasks={tasks} onAddEvent={onAddEvent} onDeleteEvent={onDeleteEvent} onAddTask={onAddTask} onToggleTask={onToggleTask} onDeleteTask={onDeleteTask} />
+            </>
+          )}
+          {family === 'grades' && (
+            <>
+              {childPicker()}
+              {selected ? <SchoolGradesPanel key={selected.id} childId={selected.id} childName={selected.name} grade={selected.grade} isDemo={!!isDemo} /> : <p className="text-sm text-slate-500">Añade un hijo primero.</p>}
+            </>
+          )}
+          {family === 'books' && (
+            <>
+              {childPicker()}
+              <p className="text-xs text-slate-500 bg-blue-50 rounded-xl px-4 py-2">Los temas de sus libros aparecen en su Biblioteca con explicación y esquema. También podéis pedirle que resuma un tema con sus palabras.</p>
+              {selected ? <StudyModuleContainer key={selected.id} userId={userId} childId={selected.id} userRole="parent" grade={selected.grade} isDemo={!!isDemo} /> : <p className="text-sm text-slate-500">Añade un hijo primero.</p>}
+            </>
+          )}
+          {family === 'reports' && <SentReportsPanel isDemo={!!isDemo} />}
         </div>
       )}
 
-      {activeTab === 'reading' && (
-        <div className="space-y-6 animate-in fade-in">
-          <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar">
-            {children.map(child => (
-              <button
-                key={child.id}
-                onClick={() => setSelectedChildId(child.id)}
-                className={`flex-shrink-0 px-4 py-2 rounded-full text-xs font-black transition-all ${
-                  selectedChildId === child.id 
-                  ? 'bg-blue-600 text-white shadow-md' 
-                  : 'bg-white border border-slate-200 text-slate-500'
-                }`}
-              >
-                {child.avatar} {child.name}
-              </button>
-            ))}
-          </div>
-          {selectedChildId && <ReadingHistory userId={userId} childId={selectedChildId} />}
-        </div>
-      )}
-
-      {activeTab === 'math' && (
-        <div className="space-y-6 animate-in fade-in">
-          <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar">
-            {children.map(child => (
-              <button
-                key={child.id}
-                onClick={() => setSelectedChildId(child.id)}
-                className={`flex-shrink-0 px-4 py-2 rounded-full text-xs font-black transition-all ${
-                  selectedChildId === child.id 
-                  ? 'bg-orange-600 text-white shadow-md' 
-                  : 'bg-white border border-slate-200 text-slate-500'
-                }`}
-              >
-                {child.avatar} {child.name}
-              </button>
-            ))}
-          </div>
-          {selectedChildId && <MathHistory userId={userId} childId={selectedChildId} />}
-        </div>
-      )}
-
-      {activeTab === 'english' && (
-        <div className="space-y-6 animate-in fade-in">
-          <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar">
-            {children.map(child => (
-              <button
-                key={child.id}
-                onClick={() => setSelectedChildId(child.id)}
-                className={`flex-shrink-0 px-4 py-2 rounded-full text-xs font-black transition-all ${
-                  selectedChildId === child.id 
-                  ? 'bg-blue-600 text-white shadow-md' 
-                  : 'bg-white border border-slate-200 text-slate-500'
-                }`}
-              >
-                {child.avatar} {child.name}
-              </button>
-            ))}
-          </div>
-          {selectedChildId && <EnglishHistory userId={userId} childId={selectedChildId} />}
-        </div>
-      )}
-
-      {activeTab === 'location' && (
-        <LocationHub 
-          viewMode="parent" 
-          child={null} 
-          locationStates={locationStates} 
-          onToggleTracking={onToggleTracking} 
-          onSetPoint={onSetLocationPoint}
-          onSearchAddress={onSearchAddress}
-          onReverseGeocode={onReverseGeocode}
-        />
-      )}
-
-      {activeTab === 'grades' && (
-        <GradeManager 
-          children={children} 
-          grades={academicGrades} 
-          onAddGrade={onAddGrade} 
-          onDeleteGrade={onDeleteGrade} 
-          onSetReinforcementPlan={onSetReinforcementPlan}
-        />
-      )}
-
-      {activeTab === 'srs' && (
-        <div className="space-y-6 animate-in fade-in">
-          <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar">
-            {children.map(child => (
-              <button
-                key={child.id}
-                onClick={() => setSelectedChildId(child.id)}
-                className={`flex-shrink-0 px-4 py-2 rounded-full text-xs font-black transition-all ${
-                  selectedChildId === child.id 
-                  ? 'bg-orange-600 text-white shadow-md' 
-                  : 'bg-white border border-slate-200 text-slate-500'
-                }`}
-              >
-                {child.avatar} {child.name}
-              </button>
-            ))}
-          </div>
-          {selectedChildId && <SRSHistory userId={userId} childId={selectedChildId} />}
-        </div>
-      )}
-
-      {activeTab === 'ai-corrections' && (
-        <AICorrectionManager 
-          children={children} 
-          corrections={aiCorrections} 
-          onAddCorrection={onAddAICorrection} 
-          onDeleteCorrection={onDeleteAICorrection} 
-        />
-      )}
-
-      {activeTab === 'daily-review' && (
-        <ParentReviewManager 
-          children={children} 
-          reports={dailyReports} 
-          reviewPlans={reviewPlans} 
-          books={books} 
-          onCreatePlan={onCreateReviewPlan} 
-        />
-      )}
-
-      {activeTab === 'school' && (
-        <SchoolHub 
-          children={children} 
-          communications={communications} 
-          quickNotes={quickNotes}
-          onAddNote={onAddQuickNote}
-          onDeleteNote={onDeleteQuickNote}
-          onSyncEmails={onSyncSchoolComms}
-          onMarkRead={onMarkCommRead}
-        />
-      )}
-
-      {activeTab === 'inbox' && (
-        <RequestManager 
-          requests={requests} 
-          tasks={tasks} 
-          children={children} 
-          onApprove={onApproveRequest} 
-          onReject={onRejectRequest} 
-          onUpdateTask={onUpdateTask} 
-          onDeleteTask={onDeleteTask} 
-        />
-      )}
-
-      {activeTab === 'agenda' && (
-        <AgendaManager 
-          children={children} 
-          events={events} 
-          tasks={tasks}
-          onAddEvent={onAddEvent}
-          onDeleteEvent={onDeleteEvent}
-          onAddTask={onAddTask}
-          onToggleTask={onToggleTask}
-          onDeleteTask={onDeleteTask}
-        />
-      )}
-
-      {activeTab === 'children' && (
-        <ChildManager 
-          children={children} 
-          onAddChild={onAddChild} 
-          onUpdateChild={onUpdateChild}
-          onDeleteChild={onDeleteChild}
-        />
-      )}
-
-      {activeTab === 'rewards' && (
-        <RewardManager 
-          rewards={rewards} 
-          onUpdateRewards={onUpdateRewards} 
-        />
+      {reportFor && (
+        <ParentReport childId={reportFor} childName={children.find((c) => c.id === reportFor)?.name || ''} isDemo={!!isDemo} onClose={() => setReportFor(null)} />
       )}
     </div>
   );

@@ -2,7 +2,9 @@
 export type GradeLevel = 
   | '1º Primaria' | '2º Primaria' | '3º Primaria' | '4º Primaria' | '5º Primaria' | '6º Primaria'
   | '1º ESO' | '2º ESO' | '3º ESO' | '4º ESO'
-  | '1º Bachillerato' | '2º Bachillerato';
+  | '1º Bachillerato' | '2º Bachillerato'
+  // FP: «FP Básico 1º · Informática y comunicaciones» (títulos del catálogo oficial, shared/fpCatalog.ts)
+  | `FP ${string}`;
 
 export type Subject = string; // More flexible to include all official subjects
 
@@ -31,7 +33,7 @@ export type Country =
   | 'Honduras' | 'México' | 'Nicaragua' | 'Panamá' | 'Paraguay' | 'Puerto Rico' 
   | 'Uruguay' | 'Venezuela';
 
-export type ViewMode = 'ask' | 'chat' | 'student' | 'parent' | 'library' | 'exam' | 'shop' | 'location' | 'vision' | 'voice' | 'planner' | 'scanner' | 'calligraphy' | 'reading' | 'math' | 'daily-report' | 'daily-review' | 'english' | 'pomodoro' | 'static-library' | 'worksheets';
+export type ViewMode = 'ask' | 'games' | 'chat' | 'student' | 'parent' | 'library' | 'exam' | 'shop' | 'vision' | 'planner' | 'calligraphy' | 'reading' | 'math' | 'daily-report' | 'daily-review' | 'english' | 'pomodoro' | 'worksheets';
 export type UserRole = 'student' | 'parent' | 'demo' | null;
 
 export type EventType = 'exam' | 'meeting' | 'excursion' | 'support' | 'medical' | 'other';
@@ -88,7 +90,11 @@ export interface Badge {
 export interface Streak {
   current: number;
   lastActive: number; // timestamp
-  multiplier: number;
+  best?: number;
+  /** Hoy ya ha hecho alguna actividad */
+  activeToday?: boolean;
+  /** Ya ha usado el día de descanso de esta semana */
+  restUsedThisWeek?: boolean;
 }
 
 // --- Study Planning ---

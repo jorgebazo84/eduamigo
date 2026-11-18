@@ -137,13 +137,15 @@ export const PrintableWorksheetView: React.FC<PrintableWorksheetViewProps> = ({
             <p className="font-black">Instrucciones para el estudiante:</p>
             <p className="text-[11px] leading-relaxed">
               {worksheet.formatType === 'open_questions_ruled' || !worksheet.subject.toLowerCase().includes('matem') ? (
-                'Lee con atención cada enunciado y responde a mano con letra clara y cuidada en los renglones pautados. Cuidas las mayúsculas y la ortografía.'
+                'Lee con atención cada enunciado y responde a mano con letra clara y cuidada en los renglones pautados. Cuida las mayúsculas y la ortografía.'
               ) : (
                 <>
                   Realiza las operaciones a lápiz en el espacio de cuadrícula indicado abajo.
-                  {worksheet.pedagogicalPreferences?.subtractionsMethod === 'written_subtraction' 
-                    ? ' Escribe las restas paso a paso hacia abajo y baja cada cifra del dividendo con cuidado y orden.' 
-                    : ' Calcula los pasos y anota el cociente y resto final en cada recuadro.'}
+                  {!worksheet.exercises.some((e) => e.divisor)
+                    ? ' Escribe el resultado de cada operación en su recuadro.'
+                    : worksheet.pedagogicalPreferences?.subtractionsMethod === 'written_subtraction'
+                      ? ' Escribe las restas paso a paso hacia abajo y baja cada cifra del dividendo con cuidado y orden.'
+                      : ' Calcula los pasos y anota el cociente y resto final en cada recuadro.'}
                 </>
               )}
             </p>
@@ -170,6 +172,7 @@ export const PrintableWorksheetView: React.FC<PrintableWorksheetViewProps> = ({
             // Limpieza estricta de puntos de miles en enunciados matemáticos (ej: "8496 ÷ 4" en lugar de "8.496 ÷ 4")
             const cleanPrompt = exercise.prompt.replace(/(\d)\.(\d{3})/g, '$1$2');
             const cleanDividend = exercise.dividend ? String(exercise.dividend).replace(/\./g, '') : '';
+            const isDivision = !!exercise.divisor && exercise.dividend !== undefined;
 
             return (
               <div
@@ -228,33 +231,48 @@ export const PrintableWorksheetView: React.FC<PrintableWorksheetViewProps> = ({
                         }}
                       />
 
-                      {/* Guía de colocación limpia SIN puntos separadores de miles */}
-                      <div className="relative p-2 text-slate-400 text-[11px] font-mono select-none">
-                        <div className="inline-flex items-center text-slate-600 font-bold text-base tracking-widest pl-1 pt-1">
-                          <span>{cleanDividend || 'Dividendo'}</span>
-                          <span className="border-l-2 border-b-2 border-slate-800 px-3 py-0.5 ml-2 font-black text-slate-900 text-sm">
-                            {exercise.divisor || 'Divisor'}
-                          </span>
+                      {isDivision ? (
+                        /* Guía de colocación limpia SIN puntos separadores de miles */
+                        <div className="relative p-2 text-slate-400 text-[11px] font-mono select-none">
+                          <div className="inline-flex items-center text-slate-600 font-bold text-base tracking-widest pl-1 pt-1">
+                            <span>{cleanDividend}</span>
+                            <span className="border-l-2 border-b-2 border-slate-800 px-3 py-0.5 ml-2 font-black text-slate-900 text-sm">
+                              {exercise.divisor}
+                            </span>
+                          </div>
                         </div>
-                      </div>
+                      ) : (
+                        <div className="relative p-2 text-slate-700 font-mono font-bold text-base tracking-wider select-none">
+                          {exercise.prompt}
+                        </div>
+                      )}
 
                       {/* Marca de agua tenue */}
                       <div className="absolute bottom-2 right-2 text-[9px] font-bold text-slate-300 uppercase tracking-widest pointer-events-none">
-                        Espacio para restas y bajadas de cifras
+                        {isDivision ? 'Espacio para restas y bajadas de cifras' : 'Espacio para hacer la operación'}
                       </div>
                     </div>
 
-                    {/* Casilla final de Cociente y Resto */}
-                    <div className="pt-2 border-t border-slate-200 grid grid-cols-2 gap-2 text-xs">
-                      <div className="border border-slate-300 rounded p-1.5 bg-slate-50 print:bg-white">
-                        <span className="text-[9px] font-bold text-slate-500 uppercase block">Cociente:</span>
-                        <div className="h-5"></div>
+                    {isDivision ? (
+                      /* Casilla final de Cociente y Resto */
+                      <div className="pt-2 border-t border-slate-200 grid grid-cols-2 gap-2 text-xs">
+                        <div className="border border-slate-300 rounded p-1.5 bg-slate-50 print:bg-white">
+                          <span className="text-[9px] font-bold text-slate-500 uppercase block">Cociente:</span>
+                          <div className="h-5"></div>
+                        </div>
+                        <div className="border border-slate-300 rounded p-1.5 bg-slate-50 print:bg-white">
+                          <span className="text-[9px] font-bold text-slate-500 uppercase block">Resto:</span>
+                          <div className="h-5"></div>
+                        </div>
                       </div>
-                      <div className="border border-slate-300 rounded p-1.5 bg-slate-50 print:bg-white">
-                        <span className="text-[9px] font-bold text-slate-500 uppercase block">Resto:</span>
-                        <div className="h-5"></div>
+                    ) : (
+                      <div className="pt-2 border-t border-slate-200 text-xs">
+                        <div className="border border-slate-300 rounded p-1.5 bg-slate-50 print:bg-white">
+                          <span className="text-[9px] font-bold text-slate-500 uppercase block">Resultado:</span>
+                          <div className="h-5"></div>
+                        </div>
                       </div>
-                    </div>
+                    )}
                   </>
                 )}
               </div>

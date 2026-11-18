@@ -12,10 +12,12 @@ interface StudyModuleContainerProps {
   childId: string;
   userRole: 'parent' | 'student' | 'demo' | null;
   grade: string;
+  isDemo?: boolean;
   onViewChange?: (mode: any) => void;
 }
 
-const StudyModuleContainer: React.FC<StudyModuleContainerProps> = ({ userId, childId, userRole, grade, onViewChange }) => {
+const StudyModuleContainer: React.FC<StudyModuleContainerProps> = ({ userId, childId, userRole, grade, isDemo, onViewChange }) => {
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [books, setBooks] = useState<Book[]>([]);
   const [tasks, setTasks] = useState<StudyTask[]>([]);
   const [activeTask, setActiveTask] = useState<StudyTask | null>(null);
@@ -49,16 +51,18 @@ const StudyModuleContainer: React.FC<StudyModuleContainerProps> = ({ userId, chi
   };
 
   const handleAddBook = async (book: Book) => {
-    setBooks(prev => [...prev, book]);
-    
+    setSaveError(null);
+    if (isDemo) { setBooks(prev => [...prev, book]); return; }
     try {
-      await fetch(`api_study.php?action=add_book&userId=${userId}`, {
+      const r = await fetch(`api_study.php?action=add_book`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(book)
       });
-    } catch (e) { 
-      console.error("Error al guardar libro en API:", e);
+      if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.error || 'No se ha podido guardar el libro.'); }
+      setBooks(prev => [...prev, book]);
+    } catch (e: any) {
+      setSaveError(e.message || 'No se ha podido guardar el libro.');
     }
   };
 
@@ -89,18 +93,16 @@ const StudyModuleContainer: React.FC<StudyModuleContainerProps> = ({ userId, chi
     } catch (e) { console.error(e); }
   };
 
-  const handleCompleteTask = async (evaluation: any, summary: string, handwritingImage?: string, medicalEvaluation?: string) => {
+  const handleCompleteTask = async (evaluation: any, summary: string) => {
     if (!activeTask) return;
 
     const updatedTask: StudyTask = {
       ...activeTask,
       status: 'completed',
       summary,
-      handwritingImage,
       aiFeedbackChild: evaluation.feedbackChild,
       aiFeedbackParent: evaluation.feedbackParent,
-      medicalEvaluation,
-      aiScore: evaluation.score,
+      aiScore: undefined,
       completedAt: Date.now()
     };
 
@@ -124,7 +126,8 @@ const StudyModuleContainer: React.FC<StudyModuleContainerProps> = ({ userId, chi
       {userRole === 'parent' ? (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           <div className="space-y-8">
-            <BookManager userId={userId} childId={childId} onBookAdded={handleAddBook} />
+            <BookManager userId={userId} childId={childId} grade={grade} isDemo={isDemo} onBookAdded={handleAddBook} />
+            {saveError && <p className="text-sm font-bold text-red-600" role="alert">{saveError}</p>}
             <BookList books={books} onDeleteBook={handleDeleteBook} />
             <ISBNStudyPlanner books={books} tasks={tasks} onAddTask={handleAddTask} />
           </div>
@@ -199,6 +202,8 @@ const StudyModuleContainer: React.FC<StudyModuleContainerProps> = ({ userId, chi
         <StudyReview 
           task={activeTask} 
           bookTitle={books.find(b => b.id === activeTask.bookId)?.title || ''}
+          bookSubject={String(books.find(b => b.id === activeTask.bookId)?.subject || '')}
+          childId={childId}
           grade={grade}
           onComplete={handleCompleteTask}
           onClose={() => setActiveTask(null)}

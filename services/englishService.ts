@@ -1,263 +1,66 @@
-import { GoogleGenAI, Type } from "@google/genai";
-import { EnglishLevel, EnglishLesson, EnglishEvaluation } from "../types/english";
+// Cliente de Inglés (opción 9): todo lo decide el servidor con Claude. Ya no hay IA en el navegador.
+import type { EnglishLevel } from '../shared/englishBank';
 
-// Usamos la variable de entorno proporcionada por la plataforma
-const apiKey = process.env.GEMINI_API_KEY;
-const ai = new GoogleGenAI({ apiKey: apiKey! });
+const call = async (action: string, body: any) => {
+  let res: Response;
+  try {
+    res = await fetch(`api_english.php?action=${action}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(body) });
+  } catch {
+    throw new Error('Sin conexión. Revisa internet e inténtalo de nuevo.');
+  }
+  let data: any = {};
+  try { data = await res.json(); } catch { /* vacío */ }
+  if (!res.ok) { const e: any = new Error(data.error || 'Algo ha fallado. Inténtalo de nuevo.'); e.code = data.code; throw e; }
+  return data;
+};
+
+export interface EnglishState {
+  level: EnglishLevel; levelLabel: string; placed: boolean; lessonsAtLevel: number; promoteAfter: number;
+  pointsToday: number; pointsCap: number; lessonsToday: number; lessonsPerDay: number;
+}
+export interface McQuestion { q: string; options: string[] }
+export interface EnglishLessonView {
+  attemptId: string; level: EnglishLevel; levelLabel: string; theme: string;
+  lesson: {
+    title: string;
+    vocabulary: { en: string; es: string; example: string }[];
+    grammar: { title: string; explanation: string; examples: string[] };
+    phrases: string[];
+    reading: { text: string; questions: McQuestion[] };
+    listening: { text: string; questions: McQuestion[] };
+    writing: { prompt: string; promptEs: string; minWords: number };
+  };
+}
+export interface WritingResult { score?: number; feedback?: string; corrections?: { original: string; correction: string; explanation: string }[]; nextStep?: string; error?: string }
+export interface LessonResult {
+  mcCorrect: number; mcTotal: number; reading: boolean[]; listening: boolean[]; key: { reading: number[]; listening: number[] };
+  writing: WritingResult | null; points: number; newPoints: number; promoted: string | null;
+}
+export interface EnglishParentStats {
+  level: EnglishLevel; levelLabel: string; placed: boolean; setBy: string | null; levels: { id: EnglishLevel; label: string }[];
+  lessons: { id: string; title: string; level: string; mcCorrect: number; mcTotal: number; writingText: string; writing: WritingResult | null; points: number; at: number }[];
+  placements: { level: string; detail: Record<string, number>; at: number }[];
+}
 
 export const englishService = {
-  /**
-   * Genera una lección diaria personalizada basada en el nivel de Cambridge.
-   */
-  async generateDailyLesson(level: EnglishLevel, childName: string, grade: string): Promise<EnglishLesson> {
-    const model = ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: `Actúa como un profesor experto de Cambridge English. Genera una lección diaria para ${childName}, que está en ${grade} y tiene un nivel ${level}.
-      La lección debe incluir:
-      1. Listening: Un guion para un audio (que luego convertiremos a voz) y 3 preguntas de opción múltiple.
-      2. Reading: Un texto corto adecuado al nivel y 3 preguntas de opción múltiple.
-      3. Writing: Un prompt para que el niño escriba algo (mínimo de palabras según el nivel).
-      4. Speaking: Un tema de conversación y 3 frases sugeridas.
-      
-      Devuelve el resultado en JSON siguiendo la estructura de EnglishLesson.`,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            id: { type: Type.STRING },
-            level: { type: Type.STRING },
-            title: { type: Type.STRING },
-            description: { type: Type.STRING },
-            skills: {
-              type: Type.OBJECT,
-              properties: {
-                listening: {
-                  type: Type.OBJECT,
-                  properties: {
-                    audioPrompt: { type: Type.STRING },
-                    questions: {
-                      type: Type.ARRAY,
-                      items: {
-                        type: Type.OBJECT,
-                        properties: {
-                          question: { type: Type.STRING },
-                          options: { type: Type.ARRAY, items: { type: Type.STRING } },
-                          correctIndex: { type: Type.NUMBER }
-                        },
-                        required: ["question", "options", "correctIndex"]
-                      }
-                    }
-                  },
-                  required: ["audioPrompt", "questions"]
-                },
-                reading: {
-                  type: Type.OBJECT,
-                  properties: {
-                    text: { type: Type.STRING },
-                    questions: {
-                      type: Type.ARRAY,
-                      items: {
-                        type: Type.OBJECT,
-                        properties: {
-                          question: { type: Type.STRING },
-                          options: { type: Type.ARRAY, items: { type: Type.STRING } },
-                          correctIndex: { type: Type.NUMBER }
-                        },
-                        required: ["question", "options", "correctIndex"]
-                      }
-                    }
-                  },
-                  required: ["text", "questions"]
-                },
-                writing: {
-                  type: Type.OBJECT,
-                  properties: {
-                    prompt: { type: Type.STRING },
-                    minWords: { type: Type.NUMBER }
-                  },
-                  required: ["prompt", "minWords"]
-                },
-                speaking: {
-                  type: Type.OBJECT,
-                  properties: {
-                    topic: { type: Type.STRING },
-                    suggestedPhrases: { type: Type.ARRAY, items: { type: Type.STRING } }
-                  },
-                  required: ["topic", "suggestedPhrases"]
-                }
-              },
-              required: ["listening", "reading", "writing", "speaking"]
-            }
-          },
-          required: ["id", "level", "title", "description", "skills"]
-        }
-      }
-    });
-
-    const response = await model;
-    return JSON.parse(response.text || '{}') as EnglishLesson;
-  },
-
-  /**
-   * Evalúa el trabajo de escritura del estudiante.
-   */
-  async evaluateWriting(text: string, prompt: string, level: EnglishLevel): Promise<EnglishEvaluation> {
-    const model = ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: `Evalúa este texto escrito por un estudiante de nivel ${level} para el siguiente prompt: "${prompt}".
-      Texto del estudiante: "${text}".
-      
-      Proporciona una puntuación del 0 al 100, feedback motivador, correcciones específicas (original vs corrección con explicación) y pasos a seguir.
-      Devuelve el resultado en JSON siguiendo la estructura de EnglishEvaluation.`,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            score: { type: Type.NUMBER },
-            feedback: { type: Type.STRING },
-            corrections: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  original: { type: Type.STRING },
-                  correction: { type: Type.STRING },
-                  explanation: { type: Type.STRING }
-                },
-                required: ["original", "correction", "explanation"]
-              }
-            },
-            nextSteps: { type: Type.STRING }
-          },
-          required: ["score", "feedback", "corrections", "nextSteps"]
-        }
-      }
-    });
-
-    const response = await model;
-    return JSON.parse(response.text || '{}') as EnglishEvaluation;
-  },
-
-  /**
-   * Genera una prueba de nivel oficial (estilo Escuela de Idiomas).
-   */
-  async generateOfficialPlacementTest(grade: string): Promise<any> {
-    const model = ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: `Actúa como un examinador de la Escuela Oficial de Idiomas (EOI). Genera una prueba de nivel completa para un estudiante de ${grade}.
-      La prueba debe tener 4 secciones:
-      1. Use of English (10 preguntas de gramática/vocabulario de niveles variados).
-      2. Reading Comprehension (Un texto de unas 200 palabras y 5 preguntas).
-      3. Listening Comprehension (Un guion de audio y 5 preguntas).
-      4. Writing (Un prompt para una redacción).
-      
-      Devuelve el resultado en JSON siguiendo la estructura de PlacementTest.`,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            id: { type: Type.STRING },
-            sections: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  id: { type: Type.STRING },
-                  title: { type: Type.STRING },
-                  instructions: { type: Type.STRING },
-                  text: { type: Type.STRING, description: "Opcional, para Reading/Listening" },
-                  questions: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        id: { type: Type.STRING },
-                        question: { type: Type.STRING },
-                        options: { type: Type.ARRAY, items: { type: Type.STRING } },
-                        correctIndex: { type: Type.NUMBER },
-                        level: { type: Type.STRING }
-                      },
-                      required: ["id", "question", "options", "correctIndex", "level"]
-                    }
-                  }
-                },
-                required: ["id", "title", "instructions", "questions"]
-              }
-            },
-            writingPrompt: {
-              type: Type.OBJECT,
-              properties: {
-                prompt: { type: Type.STRING },
-                minWords: { type: Type.NUMBER }
-              },
-              required: ["prompt", "minWords"]
-            }
-          },
-          required: ["id", "sections", "writingPrompt"]
-        }
-      }
-    });
-
-    const response = await model;
-    return JSON.parse(response.text || '{}');
-  },
-
-  /**
-   * Genera preguntas para una prueba de nivel inicial.
-   */
-  async generatePlacementQuestions(grade: string): Promise<{ question: string; options: string[]; correctIndex: number; level: EnglishLevel }[]> {
-    const model = ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: `Genera 10 preguntas de opción múltiple para determinar el nivel de inglés de un estudiante que está en ${grade}.
-      Las preguntas deben cubrir diferentes niveles de Cambridge (desde Pre-A1 hasta B2) para poder evaluar correctamente.
-      Devuelve un array de objetos JSON con: question, options (4 opciones), correctIndex y el nivel que evalúa esa pregunta.`,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              question: { type: Type.STRING },
-              options: { type: Type.ARRAY, items: { type: Type.STRING } },
-              correctIndex: { type: Type.NUMBER },
-              level: { type: Type.STRING }
-            },
-            required: ["question", "options", "correctIndex", "level"]
-          }
-        }
-      }
-    });
-
-    const response = await model;
-    return JSON.parse(response.text || '[]') as any[];
-  },
-
-  /**
-   * Realiza una prueba de nivel inicial (deprecated, use generatePlacementQuestions instead).
-   */
-  async performPlacementTest(grade: string): Promise<{ level: EnglishLevel; explanation: string }> {
-    const model = ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: `Basado en que un estudiante está en ${grade}, determina cuál sería su nivel inicial de Cambridge English más probable (Pre-A1 Starters, A1 Movers, A2 Flyers, A2 Key, B1 Preliminary, B2 First).
-      Devuelve el nivel y una breve explicación de por qué.`,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            level: { type: Type.STRING },
-            explanation: { type: Type.STRING }
-          },
-          required: ["level", "explanation"]
-        }
-      }
-    });
-
-    const response = await model;
-    return JSON.parse(response.text || '{}') as { level: EnglishLevel; explanation: string };
-  }
+  state: (childId: string): Promise<EnglishState> => call('state', { childId }),
+  placementStart: (childId: string): Promise<{ placementId: string; questions: { id: string; question: string; options: string[] }[] }> => call('placement_start', { childId }),
+  placementSubmit: (childId: string, placementId: string, answers: number[]): Promise<{ level: EnglishLevel; levelLabel: string; correctByLevel: Record<string, number> }> => call('placement_submit', { childId, placementId, answers }),
+  lessonStart: (childId: string): Promise<EnglishLessonView> => call('lesson_start', { childId }),
+  lessonSubmit: (childId: string, attemptId: string, reading: number[], listening: number[], writing: string): Promise<LessonResult> => call('lesson_submit', { childId, attemptId, reading, listening, writing }),
+  parentStats: (childId: string): Promise<EnglishParentStats> => call('parent_stats', { childId }),
+  setLevel: (childId: string, level: EnglishLevel) => call('set_level', { childId, level }),
 };
+
+/** Lee un texto en inglés con la voz del dispositivo (no se envía nada a ningún sitio) */
+export function speakEnglish(text: string, rate = 0.9) {
+  if (!('speechSynthesis' in window)) return false;
+  window.speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'en-GB';
+  u.rate = rate;
+  const voice = window.speechSynthesis.getVoices().find((v) => v.lang?.startsWith('en-GB')) || window.speechSynthesis.getVoices().find((v) => v.lang?.startsWith('en'));
+  if (voice) u.voice = voice;
+  window.speechSynthesis.speak(u);
+  return true;
+}

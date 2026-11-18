@@ -1,57 +1,47 @@
 import React, { useState } from 'react';
-import { studyService } from '../services/studyService';
+import { reviewService, ExplainFeedback } from '../services/reviewService';
 import { StudyTask, EvaluationResponse } from '../types/study';
 
 interface StudyReviewProps {
   task: StudyTask;
   bookTitle: string;
+  bookSubject?: string;
+  childId: string;
   grade: string;
-  onComplete: (evaluation: EvaluationResponse, summary: string, handwritingImage?: string, medicalEvaluation?: string) => void;
+  onComplete: (evaluation: EvaluationResponse, summary: string) => void;
   onClose: () => void;
 }
 
-const StudyReview: React.FC<StudyReviewProps> = ({ task, bookTitle, grade, onComplete, onClose }) => {
+// El niño explica el tema con sus palabras y el tutor (Claude, en el servidor) le comenta el contenido.
+// Solo se valora lo que ha entendido: ni la letra ni la persona.
+const StudyReview: React.FC<StudyReviewProps> = ({ task, bookTitle, bookSubject, childId, onComplete, onClose }) => {
   const [summary, setSummary] = useState('');
   const [loading, setLoading] = useState(false);
   const [evaluation, setEvaluation] = useState<EvaluationResponse | null>(null);
-  const [handwritingImage, setHandwritingImage] = useState<string | null>(null);
-  const [medicalEvaluation, setMedicalEvaluation] = useState<string | null>(null);
-
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setHandwritingImage(reader.result as string);
-      };
-      reader.readAsDataURL(file);
-    }
-  };
+  const [feedback, setFeedback] = useState<ExplainFeedback | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async () => {
-    if (summary.length < 20) {
-      alert("¡Escribe un poquito más! Cuéntame con más detalle lo que has aprendido.");
+    if (summary.trim().length < 20) {
+      setError('¡Escribe un poquito más! Cuéntame con más detalle lo que has aprendido.');
       return;
     }
-
     setLoading(true);
+    setError(null);
     try {
-      const result = await studyService.evaluateSummary(summary, task.topicTitle, bookTitle, grade);
+      const f = await reviewService.explain({ childId, subject: bookSubject, topic: task.topicTitle, text: summary });
+      const result: EvaluationResponse = {
+        score: 0,
+        feedbackChild: [f.praise, f.tip].filter(Boolean).join(' '),
+        feedbackParent: f.missing ? `Le falta o confunde: ${f.missing}` : 'Ha explicado lo esencial del tema.',
+        conceptsMissed: f.missing ? [f.missing] : [],
+        isPassed: f.understood,
+      };
+      setFeedback(f);
       setEvaluation(result);
-      
-      let medEval = "";
-      if (handwritingImage) {
-        const hResult = await studyService.evaluateHandwriting(handwritingImage);
-        medEval = hResult.evaluation;
-        setMedicalEvaluation(medEval);
-      }
-
-      if (result.isPassed) {
-        onComplete(result, summary, handwritingImage || undefined, medEval || undefined);
-      }
-    } catch (err) {
-      console.error("Error evaluando resumen:", err);
-      alert("Hubo un problema al conectar con el tutor. Inténtalo de nuevo.");
+      if (result.isPassed) onComplete(result, summary);
+    } catch (err: any) {
+      setError(err?.message || 'Hubo un problema al conectar con el tutor. Inténtalo de nuevo.');
     } finally {
       setLoading(false);
     }
@@ -86,40 +76,7 @@ const StudyReview: React.FC<StudyReviewProps> = ({ task, bookTitle, grade, onCom
                 className="w-full h-48 p-4 rounded-2xl border border-slate-200 focus:ring-2 focus:ring-ewola outline-none resize-none transition-all text-lg"
               />
 
-              <div className="space-y-2">
-                <label className="block text-sm font-bold text-slate-700">📸 Sube una foto de tu resumen escrito a mano (Opcional)</label>
-                <p className="text-xs text-slate-500">¡Tu tutor podrá analizar tu letra y ver tu progreso!</p>
-                <div className="flex items-center gap-4">
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={handleImageUpload}
-                    className="hidden"
-                    id="handwriting-upload"
-                  />
-                  <label 
-                    htmlFor="handwriting-upload"
-                    className="flex-1 p-4 border-2 border-dashed border-slate-200 rounded-2xl flex flex-col items-center justify-center gap-2 cursor-pointer hover:border-ewola hover:bg-sky-50 transition-all"
-                  >
-                    {handwritingImage ? (
-                      <img src={handwritingImage} alt="Escritura" className="h-20 rounded-lg shadow-sm" />
-                    ) : (
-                      <>
-                        <span className="text-2xl">📷</span>
-                        <span className="text-xs font-bold text-slate-400">Toca para subir foto</span>
-                      </>
-                    )}
-                  </label>
-                  {handwritingImage && (
-                    <button 
-                      onClick={() => setHandwritingImage(null)}
-                      className="p-2 bg-red-50 text-red-500 rounded-lg text-sm font-bold"
-                    >
-                      Quitar
-                    </button>
-                  )}
-                </div>
-              </div>
+              {error && <p role="alert" className="text-sm font-bold text-rose-600">{error}</p>}
 
               <button
                 onClick={handleSubmit}
@@ -141,21 +98,18 @@ const StudyReview: React.FC<StudyReviewProps> = ({ task, bookTitle, grade, onCom
                   <h3 className="text-xl font-bold text-slate-800">¡Buen trabajo!</h3>
                   <p className="text-slate-500">Tu tutor ha revisado tu resumen</p>
                 </div>
-                <div className="ml-auto text-3xl font-black text-ewola">
-                  {evaluation.score}/10
-                </div>
               </div>
 
               <div className="bg-white p-6 rounded-2xl border-2 border-ewola/20 shadow-sm">
-                <p className="text-slate-700 leading-relaxed italic">
-                  "{evaluation.feedbackChild}"
-                </p>
+                {feedback?.praise && <p className="text-slate-700 leading-relaxed">🌟 {feedback.praise}</p>}
+                {feedback?.missing && <p className="text-amber-800 leading-relaxed mt-2">🔎 {feedback.missing}</p>}
+                {feedback?.tip && <p className="text-sky-800 leading-relaxed mt-2">💡 {feedback.tip}</p>}
               </div>
 
               {!evaluation.isPassed && (
                 <div className="bg-orange-50 p-4 rounded-2xl border border-orange-100">
                   <p className="text-orange-800 text-sm">
-                    ⚠️ **Nota del tutor:** Aún faltan algunos detalles importantes. ¡Vuelve a leer el tema y añade lo que falta para ganar tus puntos!
+                    ⚠️ Aún faltan algunos detalles importantes. ¡Vuelve a leer el tema y añade lo que falta para ganar tus puntos!
                   </p>
                 </div>
               )}

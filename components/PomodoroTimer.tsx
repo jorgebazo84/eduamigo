@@ -3,20 +3,38 @@ import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { LucideIcon, Timer, Coffee, Brain, Play, Pause, RotateCcw, X, Coins, ShieldCheck } from 'lucide-react';
 
+import { rewardsService } from '../services/rewardsService';
+import { studyMinutesForGrade, breakMinutesForGrade } from '../shared/pomodoro';
+
 interface PomodoroTimerProps {
-  onAwardPoints: (points: number) => void;
+  childId: string;
+  /** El curso decide la duración: 10 min (1º–2º), 15 (3º–4º), 20 (5º–6º), 25 (ESO) */
+  grade: string;
+  isDemo?: boolean;
+  /** Con cuenta: el servidor ha dado los puntos */
+  onPoints: (newPoints: number, earned: number) => void;
+  /** Demo: puntos simulados */
+  onDemoPoints: (points: number) => void;
   onClose: () => void;
 }
 
 type Mode = 'study' | 'shortBreak' | 'longBreak';
 
-const MODES: Record<Mode, { label: string; duration: number; color: string; icon: LucideIcon }> = {
-  study: { label: 'Estudio Profundo', duration: 25 * 60, color: 'bg-rose-600', icon: Brain },
-  shortBreak: { label: 'Descanso Corto', duration: 5 * 60, color: 'bg-emerald-600', icon: Coffee },
-  longBreak: { label: 'Descanso Largo', duration: 15 * 60, color: 'bg-blue-600', icon: Timer },
+const buildModes = (grade: string): Record<Mode, { label: string; duration: number; color: string; icon: LucideIcon }> => {
+  const study = studyMinutesForGrade(grade);
+  const br = breakMinutesForGrade(grade);
+  return {
+  study: { label: `Estudio (${study} min)`, duration: study * 60, color: 'bg-rose-600', icon: Brain },
+  shortBreak: { label: `Descanso corto (${br.short} min)`, duration: br.short * 60, color: 'bg-emerald-600', icon: Coffee },
+  longBreak: { label: `Descanso largo (${br.long} min)`, duration: br.long * 60, color: 'bg-blue-600', icon: Timer },
+};
 };
 
-const PomodoroTimer: React.FC<PomodoroTimerProps> = ({ onAwardPoints, onClose }) => {
+const PomodoroTimer: React.FC<PomodoroTimerProps> = ({ childId, grade, isDemo, onPoints, onDemoPoints, onClose }) => {
+  const MODES = React.useMemo(() => buildModes(grade), [grade]);
+  // Sesión registrada en el servidor al empezar: los puntos solo llegan si de verdad han pasado 25 minutos
+  const sessionRef = useRef<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>('study');
   const [timeLeft, setTimeLeft] = useState(MODES.study.duration);
   const [isActive, setIsActive] = useState(false);
@@ -42,9 +60,18 @@ const PomodoroTimer: React.FC<PomodoroTimerProps> = ({ onAwardPoints, onClose })
   const handleComplete = () => {
     setIsActive(false);
     if (mode === 'study') {
-      const points = isConcentrationMode ? 50 : 20;
-      onAwardPoints(points);
-      // Play a sound or notification here if possible
+      const points = isConcentrationMode ? 30 : 20;
+      if (isDemo) onDemoPoints(points);
+      else if (sessionRef.current) {
+        const sid = sessionRef.current;
+        sessionRef.current = null;
+        rewardsService.pomodoroDone(childId, sid, isConcentrationMode)
+          .then((r) => {
+            onPoints(r.newPoints, r.awarded);
+            setNotice(r.capped ? '¡Sesión completada! Hoy ya has ganado los puntos de 3 sesiones; esta cuenta para tu racha.' : `¡Sesión completada! +${r.awarded} puntos.`);
+          })
+          .catch((e) => setNotice(e.message));
+      }
     }
     
     // Switch to break automatically
@@ -57,14 +84,22 @@ const PomodoroTimer: React.FC<PomodoroTimerProps> = ({ onAwardPoints, onClose })
     }
   };
 
-  const toggleTimer = () => setIsActive(!isActive);
+  const toggleTimer = () => {
+    // Al empezar una sesión de estudio desde el principio, se registra en el servidor
+    if (!isActive && mode === 'study' && !isDemo && !sessionRef.current && timeLeft === MODES.study.duration) {
+      rewardsService.pomodoroStart(childId).then((r) => { sessionRef.current = r.sessionId; }).catch(() => {});
+    }
+    setIsActive(!isActive);
+  };
 
   const resetTimer = () => {
     setIsActive(false);
+    if (mode === 'study') sessionRef.current = null;
     setTimeLeft(MODES[mode].duration);
   };
 
   const changeMode = (newMode: Mode) => {
+    sessionRef.current = null;
     setMode(newMode);
     setIsActive(false);
     setTimeLeft(MODES[newMode].duration);
@@ -89,8 +124,8 @@ const PomodoroTimer: React.FC<PomodoroTimerProps> = ({ onAwardPoints, onClose })
         <div className="bg-white rounded-[3rem] shadow-2xl w-full max-w-lg overflow-hidden border border-slate-100 relative">
           {/* Header */}
           <div className={`${MODES[mode].color} p-8 text-white relative overflow-hidden`}>
-            <div className="absolute top-0 right-0 p-6">
-              <button onClick={onClose} className="hover:bg-white/20 p-2 rounded-full transition-colors">
+            <div className="absolute top-0 right-0 p-6 z-20">
+              <button onClick={onClose} className="hover:bg-white/20 p-2 rounded-full transition-colors" aria-label="Cerrar" data-testid="pomodoro-close">
                 <X size={24} />
               </button>
             </div>
@@ -191,7 +226,7 @@ const PomodoroTimer: React.FC<PomodoroTimerProps> = ({ onAwardPoints, onClose })
                 </div>
                 <div className="text-left">
                   <p className="text-sm font-black">Modo Concentración</p>
-                  <p className="text-[10px] font-bold opacity-60 uppercase">Bloquea distracciones y duplica monedas</p>
+                  <p className="text-[10px] font-bold opacity-60 uppercase">Pantalla sin distracciones: 30 puntos en vez de 20</p>
                 </div>
               </div>
               <div className={`w-12 h-6 rounded-full relative transition-colors ${isConcentrationMode ? 'bg-indigo-600' : 'bg-slate-200'}`}>
@@ -206,9 +241,10 @@ const PomodoroTimer: React.FC<PomodoroTimerProps> = ({ onAwardPoints, onClose })
             <div className="mt-8 flex items-center gap-2 px-6 py-3 bg-amber-50 rounded-2xl border border-amber-100">
               <Coins size={16} className="text-amber-600" />
               <span className="text-[10px] font-black text-amber-900 uppercase tracking-wider">
-                Recompensa: {isConcentrationMode ? '50' : '20'} Monedas por sesión
+                Recompensa: {isConcentrationMode ? '30' : '20'} puntos por sesión (hasta 3 al día)
               </span>
             </div>
+            {notice && <p className="mt-4 text-sm font-bold text-emerald-700 text-center" role="status">{notice}</p>}
           </div>
         </div>
 

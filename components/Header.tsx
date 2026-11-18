@@ -9,9 +9,13 @@ interface HeaderProps {
   userRole: UserRole;
   activeChild: Child | null;
   onLogout: () => void;
+  /** Vuelve a "¿Quién va a estudiar hoy?" sin cerrar la sesión */
+  onSwitchProfile?: () => void;
+  /** Avisos importantes sin ver (se muestra un globo en el botón Padres, sin contenido) */
+  parentBadge?: number;
 }
 
-const Header: React.FC<HeaderProps> = ({ viewMode, setViewMode, userRole, activeChild, onLogout }) => {
+const Header: React.FC<HeaderProps> = ({ viewMode, setViewMode, userRole, activeChild, onLogout, onSwitchProfile, parentBadge = 0 }) => {
   return (
     <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
       <div className="flex items-center gap-4">
@@ -44,6 +48,8 @@ const Header: React.FC<HeaderProps> = ({ viewMode, setViewMode, userRole, active
         </div>
       </div>
 
+      {/* En el panel de padres no se muestran los botones de la app del niño */}
+      {viewMode !== 'parent' && (
       <div className="flex flex-wrap bg-blue-100 p-1 rounded-2xl self-center md:self-auto shadow-inner">
         <button
           onClick={() => setViewMode('ask')}
@@ -59,7 +65,7 @@ const Header: React.FC<HeaderProps> = ({ viewMode, setViewMode, userRole, active
             viewMode === 'planner' ? 'bg-white text-blue-600 shadow-sm' : 'text-blue-500 hover:text-blue-700'
           }`}
         >
-          🗓️ Plan
+          📅 Mi semana
         </button>
         <button
           onClick={() => setViewMode('library')}
@@ -70,20 +76,12 @@ const Header: React.FC<HeaderProps> = ({ viewMode, setViewMode, userRole, active
           📚 Biblioteca
         </button>
         <button
-          onClick={() => setViewMode('exam')}
+          onClick={() => setViewMode('daily-review')}
           className={`px-4 py-2 rounded-xl text-xs font-black transition-all ${
-            viewMode === 'exam' ? 'bg-white text-blue-600 shadow-sm' : 'text-blue-500 hover:text-blue-700'
+            viewMode === 'daily-review' || viewMode === 'exam' ? 'bg-white text-blue-600 shadow-sm' : 'text-blue-500 hover:text-blue-700'
           }`}
         >
-          📝 Test
-        </button>
-        <button
-          onClick={() => setViewMode('voice')}
-          className={`px-4 py-2 rounded-xl text-xs font-black transition-all ${
-            viewMode === 'voice' ? 'bg-white text-blue-600 shadow-sm' : 'text-blue-500 hover:text-blue-700'
-          }`}
-        >
-          🎙️ Live
+          🧠 Repasar
         </button>
         <button
           onClick={() => setViewMode('calligraphy')}
@@ -102,6 +100,24 @@ const Header: React.FC<HeaderProps> = ({ viewMode, setViewMode, userRole, active
           🔢 Mates
         </button>
         <button
+          onClick={() => setViewMode('games')}
+          className={`px-4 py-2 rounded-xl text-xs font-black transition-all ${
+            viewMode === 'games' ? 'bg-white text-violet-600 shadow-sm' : 'text-violet-500 hover:text-violet-700'
+          }`}
+          data-testid="nav-games"
+        >
+          🎮 Juegos
+        </button>
+        <button
+          onClick={() => setViewMode('shop')}
+          className={`px-4 py-2 rounded-xl text-xs font-black transition-all ${
+            viewMode === 'shop' ? 'bg-white text-amber-600 shadow-sm' : 'text-amber-600 hover:text-amber-700'
+          }`}
+          data-testid="nav-rewards"
+        >
+          🎁 Premios
+        </button>
+        <button
           onClick={() => setViewMode('worksheets')}
           className={`px-3.5 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 ${
             viewMode === 'worksheets'
@@ -116,17 +132,17 @@ const Header: React.FC<HeaderProps> = ({ viewMode, setViewMode, userRole, active
         </button>
         <button
           onClick={() => setViewMode('parent')}
-          className={`px-4 py-2 rounded-xl text-xs font-black transition-all ${
-            viewMode === 'parent' ? 'bg-white text-blue-600 shadow-sm' : 'text-blue-500 hover:text-blue-700'
-          }`}
+          className="px-4 py-2 rounded-xl text-xs font-black transition-all text-blue-500 hover:text-blue-700"
         >
-          🧔 Padres
+          🔒 Padres
+          {parentBadge > 0 && <span className="ml-1 inline-flex items-center justify-center bg-rose-600 text-white text-[9px] min-w-4 h-4 px-1 rounded-full" aria-label={`${parentBadge} avisos para los padres`}>{parentBadge}</span>}
         </button>
       </div>
+      )}
 
       <div className="flex items-center gap-2">
         <PWAInstallButton />
-        {activeChild && (
+        {activeChild && viewMode !== 'parent' && (
           <div className="hidden lg:flex items-center gap-3 bg-white px-4 py-2 rounded-2xl shadow-sm border border-blue-50">
             <span className="text-2xl">{activeChild.avatar}</span>
             <div>
@@ -138,6 +154,16 @@ const Header: React.FC<HeaderProps> = ({ viewMode, setViewMode, userRole, active
           </div>
         )}
         
+        {activeChild && onSwitchProfile && viewMode !== 'parent' && (
+          <button
+            onClick={onSwitchProfile}
+            className="px-3 py-2 rounded-xl bg-white border-2 border-blue-50 text-blue-500 hover:text-blue-700 hover:border-blue-200 text-xs font-black flex items-center gap-1"
+            title="Cambiar de perfil"
+          >
+            <span aria-hidden="true">👥</span>
+            <span className="hidden sm:inline">Cambiar de perfil</span>
+          </button>
+        )}
         <button 
           onClick={onLogout}
           className={`p-2 rounded-xl transition-all flex items-center justify-center border-2 ${

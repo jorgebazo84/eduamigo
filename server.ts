@@ -4,13 +4,24 @@ import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import Database from 'better-sqlite3';
-import pg from 'pg';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import fs from 'fs';
-
-const { Pool: PgPool } = pg;
+import { registerTutorRoutes } from './server/tutor';
+import { openDatabase, type Db } from './server/db';
+import { initBackups } from './server/backup';
+import { registerReviewRoutes, addReviewTopic } from './server/review';
+import { registerMathRoutes } from './server/math';
+import { registerReadingRoutes } from './server/reading';
+import { registerParentRoutes } from './server/parent';
+import { registerEnglishRoutes } from './server/english';
+import { registerCalligraphyRoutes } from './server/calligraphy';
+import { registerLibraryRoutes } from './server/library';
+import { registerWeekRoutes, pullReviewsForExam } from './server/week';
+import { registerRewardsRoutes, awardActivity, earnedToday, streakInfo, CALLIGRAPHY_DAILY_CAP } from './server/rewards';
+import { registerWorksheetRoutes } from './server/worksheets';
+import { registerGamesRoutes } from './server/games';
+import { isValidGrade } from './shared/grades';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -19,132 +30,13 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
   
-  // Detect DB type automatically if not specified
-  const pgConnString = process.env.DATABASE_URL || process.env.SUPABASE_DB_URL || process.env.POSTGRES_URL;
-  const DB_TYPE = pgConnString ? 'postgres' : 'sqlite';
-  console.log(`[DB] Using database mode: ${DB_TYPE}`);
-  
-  let db: any;
-  let pgPool: pg.Pool | null = null;
-
-  if (DB_TYPE === 'postgres') {
-    try {
-      console.log(`[DB] Connecting to PostgreSQL/Supabase...`);
-      pgPool = new PgPool({
-        connectionString: pgConnString,
-        ssl: (pgConnString && pgConnString.includes('localhost')) ? false : { rejectUnauthorized: false }
-      });
-
-      await pgPool.query('SELECT 1');
-      console.log('[DB] PostgreSQL/Supabase connection test successful');
-
-      const normalizeRow = (row: any) => {
-        if (!row || typeof row !== 'object') return row;
-        const normalized: any = { ...row };
-        if (row.parentid !== undefined && row.parentId === undefined) normalized.parentId = row.parentid;
-        if (row.childid !== undefined && row.childId === undefined) normalized.childId = row.childid;
-        if (row.userid !== undefined && row.userId === undefined) normalized.userId = row.userid;
-        if (row.pointscost !== undefined && row.pointsCost === undefined) normalized.pointsCost = row.pointscost;
-        if (row.duedate !== undefined && row.dueDate === undefined) normalized.dueDate = row.duedate;
-        if (row.totalquestions !== undefined && row.totalQuestions === undefined) normalized.totalQuestions = row.totalquestions;
-        if (row.pointsearned !== undefined && row.pointsEarned === undefined) normalized.pointsEarned = row.pointsearned;
-        if (row.streak_lastactive !== undefined && row.streak_lastActive === undefined) normalized.streak_lastActive = row.streak_lastactive;
-        if (row.studyguidecontent !== undefined && row.studyGuideContent === undefined) normalized.studyGuideContent = row.studyguidecontent;
-        if (row.gradelevel !== undefined && row.gradeLevel === undefined) normalized.gradeLevel = row.gradelevel;
-        if (row.isnumeric !== undefined && row.isNumeric === undefined) normalized.isNumeric = row.isnumeric;
-        if (row.imageurl !== undefined && row.imageUrl === undefined) normalized.imageUrl = row.imageurl;
-        if (row.audiourl !== undefined && row.audioUrl === undefined) normalized.audioUrl = row.audiourl;
-        if (row.istracking !== undefined && row.isTracking === undefined) normalized.isTracking = row.istracking;
-        if (row.homecoord !== undefined && row.homeCoord === undefined) normalized.homeCoord = row.homecoord;
-        if (row.homeaddress !== undefined && row.homeAddress === undefined) normalized.homeAddress = row.homeaddress;
-        if (row.schoolcoord !== undefined && row.schoolCoord === undefined) normalized.schoolCoord = row.schoolcoord;
-        if (row.schooladdress !== undefined && row.schoolAddress === undefined) normalized.schoolAddress = row.schooladdress;
-        if (row.saferadius !== undefined && row.safeRadius === undefined) normalized.safeRadius = row.saferadius;
-        if (row.routepath !== undefined && row.routePath === undefined) normalized.routePath = row.routepath;
-        if (row.isimportant !== undefined && row.isImportant === undefined) normalized.isImportant = row.isimportant;
-        if (row.isread !== undefined && row.isRead === undefined) normalized.isRead = row.isread;
-        if (row.originalquestion !== undefined && row.originalQuestion === undefined) normalized.originalQuestion = row.originalquestion;
-        if (row.incorrectanswer !== undefined && row.incorrectAnswer === undefined) normalized.incorrectAnswer = row.incorrectanswer;
-        if (row.scheduleddate !== undefined && row.scheduledDate === undefined) normalized.scheduledDate = row.scheduleddate;
-        if (row.sourceid !== undefined && row.sourceId === undefined) normalized.sourceId = row.sourceid;
-        if (row.parentfeedback !== undefined && row.parentFeedback === undefined) normalized.parentFeedback = row.parentfeedback;
-        if (row.bookid !== undefined && row.bookId === undefined) normalized.bookId = row.bookid;
-        if (row.topicindex !== undefined && row.topicIndex === undefined) normalized.topicIndex = row.topicindex;
-        if (row.topictitle !== undefined && row.topicTitle === undefined) normalized.topicTitle = row.topictitle;
-        if (row.topicindices !== undefined && row.topicIndices === undefined) normalized.topicIndices = row.topicindices;
-        if (row.reportid !== undefined && row.reportId === undefined) normalized.reportId = row.reportid;
-        return normalized;
-      };
-
-      const convertPlaceholders = (sql: string) => {
-        let count = 0;
-        return sql.replace(/\?/g, () => `$${++count}`);
-      };
-
-      db = {
-        prepare: (sql: string) => ({
-          run: async (...args: any[]) => {
-            const mappedArgs = args.map(a => a === undefined ? null : a);
-            const pgSql = convertPlaceholders(sql);
-            const res = await pgPool!.query(pgSql, mappedArgs);
-            return {
-              lastInsertRowid: (res.rows[0] as any)?.id || null,
-              changes: res.rowCount
-            };
-          },
-          get: async (...args: any[]) => {
-            const mappedArgs = args.map(a => a === undefined ? null : a);
-            const pgSql = convertPlaceholders(sql);
-            const res = await pgPool!.query(pgSql, mappedArgs);
-            return normalizeRow(res.rows[0]);
-          },
-          all: async (...args: any[]) => {
-            const mappedArgs = args.map(a => a === undefined ? null : a);
-            const pgSql = convertPlaceholders(sql);
-            const res = await pgPool!.query(pgSql, mappedArgs);
-            return res.rows.map(normalizeRow);
-          }
-        }),
-        exec: async (sql: string) => {
-          await pgPool!.query(sql);
-        }
-      };
-    } catch (err) {
-      console.error('[DB] Failed to connect to PostgreSQL/Supabase:', err);
-      console.log('[DB] Falling back safely to local SQLite database...');
-      setupSQLite();
-    }
-  } else {
-    setupSQLite();
-  }
-
-  function setupSQLite() {
-    try {
-      db = new Database('eduamigo.db');
-      console.log('[DB] SQLite connected successfully');
-      
-      // Wrap SQLite to be async-compatible with the MySQL helper
-      const originalPrepare = db.prepare.bind(db);
-      db.prepare = (sql: string) => {
-        const stmt = originalPrepare(sql);
-        return {
-          run: async (...args: any[]) => {
-            const result = stmt.run(...args);
-            return {
-              lastInsertRowid: result.lastInsertRowid,
-              changes: result.changes
-            };
-          },
-          get: async (...args: any[]) => stmt.get(...args),
-          all: async (...args: any[]) => stmt.all(...args)
-        };
-      };
-      const originalExec = db.exec.bind(db);
-      db.exec = async (sql: string) => originalExec(sql);
-    } catch (err) {
-      console.error('[DB] Failed to connect to SQLite:', err);
-      process.exit(1);
-    }
+  // Base de datos: Turso en producción, archivo SQLite en local (ver server/db.ts)
+  let db: Db;
+  try {
+    db = await openDatabase();
+  } catch (err) {
+    console.error('[DB] No se ha podido abrir la base de datos:', err);
+    process.exit(1);
   }
 
   try {
@@ -156,8 +48,6 @@ async function startServer() {
   }
 
   // Initialize tables if they don't exist
-  // We'll use the db_schema_complete.sql file if it exists and we're on MySQL,
-  // or just use the hardcoded ones as a fallback.
   try {
     await db.exec(`
       CREATE TABLE IF NOT EXISTS users (
@@ -325,81 +215,294 @@ async function startServer() {
     console.error('[DB] Initialization error (safe to ignore if tables exist):', err);
   }
 
-  app.use(express.json());
+  // ---------------------------------------------------------------------------
+  // Sesiones y PIN parental (v1.3.0)
+  // ---------------------------------------------------------------------------
+  try {
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS sessions (
+        token_hash VARCHAR(128) PRIMARY KEY,
+        user_id VARCHAR(64) NOT NULL,
+        created_at BIGINT NOT NULL,
+        expires_at BIGINT NOT NULL,
+        parent_until BIGINT DEFAULT 0
+      );
+    `);
+  } catch (err) {
+    console.error('[DB] sessions table error:', err);
+  }
+  // Columnas nuevas en users. Si ya existen, la sentencia falla y se ignora.
+  for (const ddl of [
+    'ALTER TABLE users ADD COLUMN pin_hash VARCHAR(255)',
+    'ALTER TABLE users ADD COLUMN pin_failed INTEGER DEFAULT 0',
+    'ALTER TABLE users ADD COLUMN pin_locked_until BIGINT DEFAULT 0',
+    'ALTER TABLE users ADD COLUMN needs_pin_change INTEGER DEFAULT 0',
+  ]) {
+    try { await db.exec(ddl); } catch { /* columna ya existente */ }
+  }
 
-  // Mock auth.php
+  const SESSION_COOKIE = 'ea_session';
+  const SESSION_DAYS = 180;                 // dispositivo familiar: la sesión dura meses
+  const PARENT_WINDOW_MS = 15 * 60 * 1000;  // ventana de panel de padres tras el PIN (se renueva con el uso)
+  const PIN_MAX_FAILS = 5;
+  const PIN_LOCK_MS = 15 * 60 * 1000;
+  const WEAK_PINS = new Set(['0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999',
+    '1234', '4321', '0123', '1212', '2580', '1122', '6969', '1004', '2000', '1010']);
+
+  const sha256 = (s: string) => crypto.createHash('sha256').update(s).digest('hex');
+
+  const hashPin = (pin: string): string => {
+    const salt = crypto.randomBytes(16).toString('hex');
+    const hash = crypto.scryptSync(pin, salt, 32).toString('hex');
+    return `${salt}:${hash}`;
+  };
+
+  const checkPin = (pin: string, stored: string | null | undefined): boolean => {
+    if (!stored || !stored.includes(':')) return false;
+    const [salt, hash] = stored.split(':');
+    const candidate = crypto.scryptSync(String(pin), salt, 32);
+    const expected = Buffer.from(hash, 'hex');
+    return expected.length === candidate.length && crypto.timingSafeEqual(expected, candidate);
+  };
+
+  const validatePinFormat = (pin: any): string | null => {
+    if (typeof pin !== 'string' || !/^\d{4}$/.test(pin)) return 'El PIN debe tener exactamente 4 cifras.';
+    if (WEAK_PINS.has(pin)) return 'Ese PIN es demasiado fácil de adivinar. Elige otro.';
+    return null;
+  };
+
+  const validatePassword = (pw: any): string | null => {
+    if (typeof pw !== 'string' || pw.length < 8) return 'La contraseña debe tener al menos 8 caracteres.';
+    return null;
+  };
+
+  // Migración: PIN guardados en claro -> hash. Los PIN débiles (p. ej. 1234 por defecto) obligan a cambiarlo.
+  try {
+    const legacy = await db.prepare('SELECT id, parent_pin FROM users WHERE pin_hash IS NULL AND parent_pin IS NOT NULL').all();
+    for (const u of legacy) {
+      const weak = validatePinFormat(String(u.parent_pin)) !== null;
+      await db.prepare('UPDATE users SET pin_hash = ?, parent_pin = NULL, needs_pin_change = ? WHERE id = ?')
+        .run(hashPin(String(u.parent_pin)), weak ? 1 : 0, u.id);
+    }
+    if (legacy.length) console.log(`[AUTH] Migrated ${legacy.length} plaintext PIN(s) to hashes`);
+  } catch (err) {
+    console.error('[AUTH] PIN migration error:', err);
+  }
+
+  const parseCookies = (header?: string): Record<string, string> => {
+    const out: Record<string, string> = {};
+    (header || '').split(';').forEach(part => {
+      const i = part.indexOf('=');
+      if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+    });
+    return out;
+  };
+
+  const isHttps = (req: express.Request) =>
+    req.secure || String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https';
+
+  const setSessionCookie = (req: express.Request, res: express.Response, token: string) => {
+    res.cookie(SESSION_COOKIE, token, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: isHttps(req),
+      maxAge: SESSION_DAYS * 24 * 3600 * 1000,
+      path: '/',
+    });
+  };
+
+  // Crea sesión. Tras entrar con contraseña, el adulto tiene unos minutos de panel abierto
+  // (sirve para elegir el PIN si hace falta); la app lo vuelve a bloquear al salir del panel.
+  const createSession = async (req: express.Request, res: express.Response, userId: string) => {
+    const token = crypto.randomBytes(32).toString('hex');
+    const now = Date.now();
+    await db.prepare('INSERT INTO sessions (token_hash, user_id, created_at, expires_at, parent_until) VALUES (?, ?, ?, ?, ?)')
+      .run(sha256(token), userId, now, now + SESSION_DAYS * 24 * 3600 * 1000, now + 10 * 60 * 1000);
+    setSessionCookie(req, res, token);
+  };
+
+  type SessionInfo = { tokenHash: string; userId: string; parentUntil: number };
+
+  const getSession = async (req: express.Request): Promise<SessionInfo | null> => {
+    const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
+    if (!token) return null;
+    const row = await db.prepare('SELECT * FROM sessions WHERE token_hash = ?').get(sha256(token));
+    if (!row) return null;
+    if (Number(row.expires_at) < Date.now()) {
+      await db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(row.token_hash);
+      return null;
+    }
+    return { tokenHash: row.token_hash, userId: row.user_id, parentUntil: Number(row.parent_until) || 0 };
+  };
+
+  const isParentUnlocked = (s: SessionInfo) => s.parentUntil > Date.now();
+
+  // Acciones que solo puede hacer un adulto con el panel desbloqueado por PIN.
+  const PARENT_ONLY: Record<string, Set<string>> = {
+    api: new Set(['add_child', 'update_child', 'delete_child', 'add_reward', 'delete_reward',
+                  'delete_event', 'add_task', 'delete_task']),
+    api_study: new Set(['add_book', 'delete_book', 'add_study_task']),
+  };
+
+  // Middleware: exige sesión y, para acciones de padres, el PIN reciente.
+  // El userId sale SIEMPRE de la sesión, nunca de la URL.
+  const requireSession = (area: 'api' | 'api_study' | 'api_english') =>
+    async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+      try {
+        const session = await getSession(req);
+        if (!session) return res.status(401).json({ error: 'Sesión no válida. Vuelve a iniciar sesión.', code: 'AUTH_REQUIRED' });
+        const action = String(req.query.action || '');
+        if (PARENT_ONLY[area]?.has(action)) {
+          if (!isParentUnlocked(session)) {
+            return res.status(403).json({ error: 'Esta acción necesita el PIN de padres.', code: 'PIN_REQUIRED' });
+          }
+          // Ventana deslizante: mientras el adulto trabaja, el panel sigue abierto.
+          await db.prepare('UPDATE sessions SET parent_until = ? WHERE token_hash = ?').run(Date.now() + PARENT_WINDOW_MS, session.tokenHash);
+        }
+        (req as any).session = session;
+        next();
+      } catch (e: any) {
+        res.status(500).json({ error: 'Error de sesión' });
+      }
+    };
+
+  app.set('trust proxy', 1);
+  // Las rutas que reciben fotos (ya comprimidas en el móvil) aceptan hasta 8 MB; el resto, 100 KB.
+  const bigJson = express.json({ limit: '8mb' });
+  const smallJson = express.json();
+  const PHOTO_ROUTES = new Set(['/api_worksheets.php', '/api_tutor.php', '/api_reading.php', '/api_calligraphy.php', '/api_library.php', '/api_parent.php']);
+  app.use((req, res, next) => (PHOTO_ROUTES.has(req.path) ? bigJson : smallJson)(req, res, next));
+  app.use('/admin', express.urlencoded({ extended: false, limit: '10kb' }));
+
+  // auth.php: registro, inicio de sesión, PIN parental
   app.post('/auth.php', async (req, res) => {
-    const action = req.query.action;
-    const { email, password, parentPin, userId, newPin, newPassword, pin } = req.body || {};
+    const action = String(req.query.action || '');
+    const { email, password, parentPin, newPin, newPassword, pin } = req.body || {};
+    const normEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
 
-    console.log(`[AUTH] Action: ${action}, Email: ${email}, UserId: ${userId}`);
+    // Registra un fallo de PIN y bloquea tras PIN_MAX_FAILS intentos.
+    const registerPinFailure = async (user: any) => {
+      const fails = (Number(user.pin_failed) || 0) + 1;
+      const lockedUntil = fails >= PIN_MAX_FAILS ? Date.now() + PIN_LOCK_MS : 0;
+      await db.prepare('UPDATE users SET pin_failed = ?, pin_locked_until = ? WHERE id = ?')
+        .run(lockedUntil ? 0 : fails, lockedUntil, user.id);
+      return { fails, lockedUntil };
+    };
+    const pinLockMessage = (lockedUntil: number) => {
+      const mins = Math.max(1, Math.ceil((lockedUntil - Date.now()) / 60000));
+      return `Demasiados intentos. Espera ${mins} min y vuelve a probar.`;
+    };
 
     try {
       if (action === 'register') {
-        if (!email || !password) throw new Error('Email y contraseña son obligatorios');
-        console.log(`[AUTH] Registering user: ${email}`);
+        if (!normEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normEmail)) throw new Error('Introduce un email válido.');
+        const pwErr = validatePassword(password); if (pwErr) throw new Error(pwErr);
+        const pinErr = validatePinFormat(parentPin); if (pinErr) throw new Error(pinErr);
+        const exists = await db.prepare('SELECT id FROM users WHERE lower(email) = ?').get(normEmail);
+        if (exists) throw new Error('Ya existe una cuenta con ese email.');
         const id = crypto.randomUUID();
         const hash = await bcrypt.hash(password, 10);
-        await db.prepare('INSERT INTO users (id, email, password_hash, parent_pin) VALUES (?, ?, ?, ?)').run(id, email, hash, parentPin || '1234');
-        console.log(`[AUTH] User registered: ${id}`);
-        res.json({ status: 'success', userId: id, email, pin: parentPin || '1234' });
+        await db.prepare('INSERT INTO users (id, email, password_hash, parent_pin, pin_hash, pin_failed, pin_locked_until, needs_pin_change) VALUES (?, ?, ?, NULL, ?, 0, 0, 0)')
+          .run(id, normEmail, hash, hashPin(parentPin));
+        await createSession(req, res, id);
+        res.json({ status: 'success', userId: id, email: normEmail, needsPinSetup: false });
+
       } else if (action === 'login') {
-        if (!email || !password) throw new Error('Email y contraseña son obligatorios');
-        console.log(`[AUTH] Login attempt: ${email}`);
-        const user = await db.prepare('SELECT * FROM users WHERE email = ?').get(email);
-        if (user) {
-          console.log(`[AUTH] User found: ${user.id}`);
-          const isMatch = await bcrypt.compare(password, user.password_hash);
-          if (isMatch) {
-            console.log(`[AUTH] Password match for: ${email}`);
-            res.json({ status: 'success', userId: user.id, email: user.email, pin: user.parent_pin });
-          } else {
-            console.log(`[AUTH] Password mismatch for: ${email}`);
-            res.status(400).json({ error: 'Credenciales incorrectas' });
-          }
-        } else {
-          console.log(`[AUTH] User not found: ${email}`);
-          res.status(400).json({ error: 'Credenciales incorrectas' });
+        if (!normEmail || !password) throw new Error('Email y contraseña son obligatorios');
+        const user = await db.prepare('SELECT * FROM users WHERE lower(email) = ?').get(normEmail);
+        const ok = user ? await bcrypt.compare(String(password), user.password_hash) : false;
+        if (!ok) return res.status(400).json({ error: 'Credenciales incorrectas' });
+        await createSession(req, res, user.id);
+        res.json({ status: 'success', userId: user.id, email: user.email, needsPinSetup: !user.pin_hash || Number(user.needs_pin_change) === 1 });
+
+      } else if (action === 'me') {
+        const session = await getSession(req);
+        if (!session) return res.status(401).json({ error: 'Sin sesión', code: 'AUTH_REQUIRED' });
+        const user = await db.prepare('SELECT id, email, pin_hash, needs_pin_change FROM users WHERE id = ?').get(session.userId);
+        if (!user) return res.status(401).json({ error: 'Sin sesión', code: 'AUTH_REQUIRED' });
+        res.json({ status: 'success', userId: user.id, email: user.email, needsPinSetup: !user.pin_hash || Number(user.needs_pin_change) === 1 });
+
+      } else if (action === 'logout') {
+        const session = await getSession(req);
+        if (session) await db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(session.tokenHash);
+        res.clearCookie(SESSION_COOKIE, { path: '/' });
+        res.json({ status: 'success' });
+
+      } else if (action === 'verify_pin') {
+        const session = await getSession(req);
+        if (!session) return res.status(401).json({ error: 'Sin sesión', code: 'AUTH_REQUIRED' });
+        const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(session.userId);
+        if (!user) return res.status(401).json({ error: 'Sin sesión', code: 'AUTH_REQUIRED' });
+        const lockedUntil = Number(user.pin_locked_until) || 0;
+        if (lockedUntil > Date.now()) return res.status(429).json({ error: pinLockMessage(lockedUntil), code: 'PIN_LOCKED', lockedUntil });
+        if (!checkPin(String(pin || ''), user.pin_hash)) {
+          const r = await registerPinFailure(user);
+          if (r.lockedUntil) return res.status(429).json({ error: pinLockMessage(r.lockedUntil), code: 'PIN_LOCKED', lockedUntil: r.lockedUntil });
+          return res.status(400).json({ error: 'PIN incorrecto', code: 'PIN_WRONG', attemptsLeft: PIN_MAX_FAILS - r.fails });
         }
+        await db.prepare('UPDATE users SET pin_failed = 0, pin_locked_until = 0 WHERE id = ?').run(user.id);
+        await db.prepare('UPDATE sessions SET parent_until = ? WHERE token_hash = ?').run(Date.now() + PARENT_WINDOW_MS, session.tokenHash);
+        res.json({ status: 'success' });
+
+      } else if (action === 'lock_parent') {
+        const session = await getSession(req);
+        if (session) await db.prepare('UPDATE sessions SET parent_until = 0 WHERE token_hash = ?').run(session.tokenHash);
+        res.json({ status: 'success' });
+
+      } else if (action === 'update_pin') {
+        const session = await getSession(req);
+        if (!session) return res.status(401).json({ error: 'Sin sesión', code: 'AUTH_REQUIRED' });
+        if (!isParentUnlocked(session)) return res.status(403).json({ error: 'Esta acción necesita el PIN de padres.', code: 'PIN_REQUIRED' });
+        const pinErr = validatePinFormat(newPin); if (pinErr) throw new Error(pinErr);
+        await db.prepare('UPDATE users SET pin_hash = ?, parent_pin = NULL, needs_pin_change = 0, pin_failed = 0, pin_locked_until = 0 WHERE id = ?')
+          .run(hashPin(newPin), session.userId);
+        res.json({ status: 'success' });
+
       } else if (action === 'reset_password') {
-        if (!email || !pin || !newPassword) throw new Error('Datos incompletos para restablecer contraseña');
-        console.log(`[AUTH] Reset password attempt: ${email}`);
-        const user = await db.prepare('SELECT * FROM users WHERE email = ? AND parent_pin = ?').get(email, pin);
-        if (!user) {
-          console.log(`[AUTH] User/PIN mismatch for: ${email}`);
+        // Recuperación con PIN (provisional hasta tener recuperación por email). Comparte el límite de intentos del PIN.
+        if (!normEmail || !pin || !newPassword) throw new Error('Datos incompletos para restablecer contraseña');
+        const pwErr = validatePassword(newPassword); if (pwErr) throw new Error(pwErr);
+        const user = await db.prepare('SELECT * FROM users WHERE lower(email) = ?').get(normEmail);
+        if (!user) return res.status(400).json({ error: 'Email o PIN incorrectos' });
+        const lockedUntil = Number(user.pin_locked_until) || 0;
+        if (lockedUntil > Date.now()) return res.status(429).json({ error: pinLockMessage(lockedUntil), code: 'PIN_LOCKED' });
+        if (!checkPin(String(pin), user.pin_hash)) {
+          const r = await registerPinFailure(user);
+          if (r.lockedUntil) return res.status(429).json({ error: pinLockMessage(r.lockedUntil), code: 'PIN_LOCKED' });
           return res.status(400).json({ error: 'Email o PIN incorrectos' });
         }
         const hash = await bcrypt.hash(newPassword, 10);
-        await db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hash, user.id);
-        console.log(`[AUTH] Password reset successful: ${email}`);
+        await db.prepare('UPDATE users SET password_hash = ?, pin_failed = 0, pin_locked_until = 0 WHERE id = ?').run(hash, user.id);
+        // Cerrar todas las sesiones abiertas de esa cuenta
+        await db.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
         res.json({ status: 'success' });
-      } else if (action === 'update_pin') {
-        if (!userId || !newPin) throw new Error('Datos incompletos para actualizar PIN');
-        console.log(`[AUTH] Update PIN attempt: ${userId}`);
-        await db.prepare('UPDATE users SET parent_pin = ? WHERE id = ?').run(newPin, userId);
-        console.log(`[AUTH] PIN updated: ${userId}`);
-        res.json({ status: 'success' });
+
       } else {
-        console.log(`[AUTH] Invalid action: ${action}`);
         res.status(400).json({ error: 'Acción no válida' });
       }
     } catch (e: any) {
-      console.error('[AUTH] Error:', e);
+      console.error('[AUTH] Error:', e?.message);
       res.status(400).json({ error: e.message });
     }
   });
 
   // Mock api.php
-  app.all('/api.php', async (req, res) => {
+  app.all('/api.php', requireSession('api'), async (req, res) => {
     const action = req.query.action;
-    const userId = req.query.userId as string;
+    const userId = (req as any).session.userId as string;
     const id = req.query.id as string;
     const data = req.body || {};
 
     try {
       if (action === 'get_initial_data') {
         if (!userId) throw new Error('userId es obligatorio');
-        const children = await db.prepare('SELECT * FROM children WHERE parentId = ?').all(userId);
+        const childRows = await db.prepare('SELECT * FROM children WHERE parentId = ?').all(userId);
+        const children = [];
+        for (const c of childRows) {
+          const st = await streakInfo(db, c.id).catch(() => null);
+          const badges = (await db.prepare('SELECT badge_id FROM child_badges WHERE child_id = ?').all(c.id).catch(() => [])).map((r: any) => r.badge_id);
+          children.push({ ...c, streak: st ? { current: st.current, best: st.best, activeToday: st.activeToday, restUsedThisWeek: st.restUsedThisWeek, lastActive: Number(c.streak_last_active) || 0 } : null, badges });
+        }
         const rewards = await db.prepare('SELECT * FROM rewards WHERE userId = ?').all(userId);
         const history = await db.prepare('SELECT * FROM history WHERE childId IN (SELECT id FROM children WHERE parentId = ?) ORDER BY timestamp DESC LIMIT 100').all(userId);
         const exams = await db.prepare('SELECT * FROM exam_results WHERE childId IN (SELECT id FROM children WHERE parentId = ?) ORDER BY timestamp DESC LIMIT 50').all(userId);
@@ -434,20 +537,24 @@ async function startServer() {
         });
       } else if (action === 'add_child') {
         if (!userId || !data.id || !data.name) throw new Error('Datos de hijo incompletos');
+        if (!isValidGrade(String(data.grade || ''))) throw new Error('Curso no válido');
         await db.prepare('INSERT INTO children (id, parentId, name, avatar, points, grade, country, streak_current, streak_last_active, streak_multiplier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-          .run(data.id, userId, data.name, data.avatar, data.points, data.grade, data.country || 'España', data.streak?.current || 0, data.streak?.lastActive || 0, data.streak?.multiplier || 1);
+          .run(data.id, userId, data.name, data.avatar, 0, data.grade, data.country || 'España', 0, 0, 1);
         res.json({ status: 'success' });
       } else if (action === 'update_child') {
         if (!id) throw new Error('id es obligatorio');
-        await db.prepare('UPDATE children SET name = ?, grade = ?, avatar = ? WHERE id = ?').run(data.name, data.grade, data.avatar, id);
+        if (!isValidGrade(String(data.grade || ''))) throw new Error('Curso no válido');
+        await db.prepare('UPDATE children SET name = ?, grade = ?, avatar = ? WHERE id = ? AND parentId = ?').run(data.name, data.grade, data.avatar, id, userId);
         res.json({ status: 'success' });
       } else if (action === 'delete_child') {
         if (!id) throw new Error('id es obligatorio');
-        await db.prepare('DELETE FROM children WHERE id = ?').run(id);
+        await db.prepare('DELETE FROM children WHERE id = ? AND parentId = ?').run(id, userId);
         res.json({ status: 'success' });
       } else if (action === 'add_reward') {
         if (!userId || !data.id || !data.title) throw new Error('Datos de premio incompletos');
-        await db.prepare('INSERT INTO rewards (id, userId, title, pointsCost, icon) VALUES (?, ?, ?, ?, ?)').run(data.id, userId, data.title, data.pointsCost, data.icon);
+        const cost = Math.round(Number(data.pointsCost));
+        if (!Number.isFinite(cost) || cost < 10 || cost > 100000) throw new Error('El coste debe estar entre 10 y 100.000 puntos');
+        await db.prepare('INSERT INTO rewards (id, userId, title, pointsCost, icon) VALUES (?, ?, ?, ?, ?)').run(String(data.id), userId, String(data.title).slice(0, 80), cost, String(data.icon || '🎁').slice(0, 16));
         res.json({ status: 'success' });
       } else if (action === 'delete_reward') {
         if (!id || !userId) throw new Error('id y userId son obligatorios');
@@ -460,29 +567,28 @@ async function startServer() {
         res.json({ status: 'success' });
       } else if (action === 'add_event') {
         if (!data.id || !data.childId) throw new Error('Datos de evento incompletos');
-        await db.prepare('INSERT INTO calendar_events (id, childId, title, date, type, description, notified) VALUES (?, ?, ?, ?, ?, ?, ?)')
-          .run(data.id, data.childId, data.title, data.date, data.type, data.description || '', data.notified ? 1 : 0);
+        if (!(await db.prepare('SELECT id FROM children WHERE id = ? AND parentId = ?').get(data.childId, userId))) throw new Error('Perfil no encontrado');
+        await db.prepare('INSERT INTO calendar_events (id, childId, title, date, type, description, notified, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+          .run(data.id, data.childId, data.title, data.date, data.type, data.description || '', data.notified ? 1 : 0, 'parent', Date.now());
+        // Un examen adelanta los repasos de esa asignatura
+        if (data.type === 'exam') await pullReviewsForExam(db, String(data.childId), `${data.title || ''} ${data.description || ''}`, String(data.date || '').slice(0, 10)).catch(() => {});
         res.json({ status: 'success' });
       } else if (action === 'delete_event') {
         if (!id) throw new Error('id es obligatorio');
-        await db.prepare('DELETE FROM calendar_events WHERE id = ?').run(id);
+        await db.prepare('DELETE FROM calendar_events WHERE id = ? AND childId IN (SELECT id FROM children WHERE parentId = ?)').run(id, userId);
         res.json({ status: 'success' });
       } else if (action === 'add_task') {
         if (!data.id || !data.childId) throw new Error('Datos de tarea incompletos');
+        if (!(await db.prepare('SELECT id FROM children WHERE id = ? AND parentId = ?').get(data.childId, userId))) throw new Error('Perfil no encontrado');
         await db.prepare('INSERT INTO tasks (id, childId, title, dueDate, completed, priority) VALUES (?, ?, ?, ?, ?, ?)').run(data.id, data.childId, data.title, data.dueDate, 0, data.priority);
         res.json({ status: 'success' });
       } else if (action === 'toggle_task') {
         if (!id) throw new Error('id es obligatorio');
-        await db.prepare('UPDATE tasks SET completed = 1 - completed WHERE id = ?').run(id);
+        await db.prepare('UPDATE tasks SET completed = 1 - completed WHERE id = ? AND childId IN (SELECT id FROM children WHERE parentId = ?)').run(id, userId);
         res.json({ status: 'success' });
       } else if (action === 'delete_task') {
         if (!id) throw new Error('id es obligatorio');
-        await db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
-        res.json({ status: 'success' });
-      } else if (action === 'update_child_points') {
-        if (!data.id) throw new Error('id de hijo es obligatorio');
-        await db.prepare('UPDATE children SET points = ?, streak_current = ?, streak_last_active = ?, streak_multiplier = ? WHERE id = ?')
-          .run(data.points, data.streak?.current || 0, data.streak?.lastActive || 0, data.streak?.multiplier || 1, data.id);
+        await db.prepare('DELETE FROM tasks WHERE id = ? AND childId IN (SELECT id FROM children WHERE parentId = ?)').run(id, userId);
         res.json({ status: 'success' });
       } else {
         res.status(400).json({ error: 'Acción no válida' });
@@ -493,59 +599,26 @@ async function startServer() {
     }
   });
 
-  // Mock api_english.php
-  app.post('/api_english.php', async (req, res) => {
-    const action = req.query.action;
-    const data = req.body;
-    try {
-      if (action === 'get_progress') {
-        const progress = await db.prepare('SELECT * FROM english_progress WHERE child_id = ?').get(data.childId);
-        if (progress) {
-          res.json({
-            status: 'success',
-            data: {
-              userId: progress.user_id,
-              childId: progress.child_id,
-              currentLevel: progress.current_level,
-              points: progress.points,
-              completedLessons: typeof progress.completed_lessons === 'string' ? JSON.parse(progress.completed_lessons || '[]') : (progress.completed_lessons || []),
-              lastActive: progress.last_active,
-              streak: progress.streak
-            }
-          });
-        } else {
-          res.json({ status: 'not_found' });
-        }
-      } else if (action === 'save_progress') {
-        await db.prepare(`
-          INSERT INTO english_progress (child_id, user_id, current_level, points, completed_lessons, last_active, streak)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(child_id) DO UPDATE SET
-            current_level = excluded.current_level,
-            points = excluded.points,
-            completed_lessons = excluded.completed_lessons,
-            last_active = excluded.last_active,
-            streak = excluded.streak
-        `).run(data.childId, data.userId, data.currentLevel, data.points, JSON.stringify(data.completedLessons || []), data.lastActive, data.streak);
-        res.json({ status: 'success' });
-      }
-    } catch (e: any) {
-      res.status(400).json({ error: e.message });
-    }
-  });
-
   // Mock api_study.php
-  app.all('/api_study.php', async (req, res) => {
+  app.all('/api_study.php', requireSession('api_study'), async (req, res) => {
     const action = req.query.action;
-    const userId = req.query.userId;
-    const childId = req.query.childId;
+    const userId = (req as any).session.userId as string;
+    const childId = req.query.childId as string | undefined;
     const id = req.query.id as string;
-    const data = req.body;
+    const data = req.body || {};
 
     try {
+      // El perfil del niño tiene que ser de esta familia
+      const cid = childId || data.childId;
+      if (cid) {
+        const own = await db.prepare('SELECT id FROM children WHERE id = ? AND parentId = ?').get(String(cid), userId);
+        if (!own) return res.status(404).json({ error: 'Perfil no encontrado' });
+      } else if (action !== 'delete_book') {
+        return res.status(400).json({ error: 'Falta el perfil del niño' });
+      }
       if (action === 'get_study_data') {
         const books = await db.prepare('SELECT * FROM books WHERE userId = ? AND childId = ?').all(userId, childId);
-        const tasks = await db.prepare('SELECT * FROM study_tasks WHERE childId = ?').all(childId);
+        const tasks = await db.prepare('SELECT * FROM study_tasks WHERE childId = ? AND childId IN (SELECT id FROM children WHERE parentId = ?)').all(childId, userId);
         res.json({
           books: books.map((b: any) => ({ ...b, topics: typeof b.topics === 'string' ? JSON.parse(b.topics || '[]') : (b.topics || []) })),
           tasks: tasks.map((t: any) => ({
@@ -561,57 +634,208 @@ async function startServer() {
           }))
         });
       } else if (action === 'add_book') {
+        if (!(await db.prepare('SELECT id FROM children WHERE id = ? AND parentId = ?').get(String(data.childId || ''), userId))) return res.status(404).json({ error: 'Perfil no encontrado' });
+        const topics = (Array.isArray(data.topics) ? data.topics : []).map((t: any) => String(t).trim().slice(0, 160)).filter(Boolean).slice(0, 60);
+        if (!String(data.title || '').trim() || !topics.length) return res.status(400).json({ error: 'Falta el título o los temas del libro.' });
         await db.prepare('INSERT INTO books (id, userId, childId, isbn, title, subject, grade, topics) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-          .run(data.id, userId, data.childId, data.isbn, data.title, data.subject, data.grade, JSON.stringify(data.topics));
+          .run(String(data.id || crypto.randomUUID()), userId, data.childId, String(data.isbn || '').slice(0, 20), String(data.title).slice(0, 200), String(data.subject || '').slice(0, 80), String(data.grade || '').slice(0, 120), JSON.stringify(topics));
         res.json({ success: true });
       } else if (action === 'delete_book') {
         await db.prepare('DELETE FROM books WHERE id = ? AND userId = ?').run(id, userId);
         res.json({ success: true });
       } else if (action === 'add_study_task') {
+        if (!(await db.prepare('SELECT id FROM books WHERE id = ? AND userId = ? AND childId = ?').get(String(data.bookId || ''), userId, String(data.childId || '')))) return res.status(404).json({ error: 'Libro no encontrado' });
         await db.prepare('INSERT INTO study_tasks (id, bookId, childId, topicIndex, topicTitle, points_reward) VALUES (?, ?, ?, ?, ?, ?)')
-          .run(data.id, data.bookId, data.childId, data.topicIndex, data.topicTitle, data.pointsReward);
+          .run(data.id, data.bookId, data.childId, data.topicIndex, data.topicTitle, Math.max(0, Math.min(100, Math.round(Number(data.pointsReward) || 0))));
         res.json({ success: true });
       } else if (action === 'complete_study_task') {
-        await db.prepare('UPDATE study_tasks SET status = "completed", summary = ?, handwriting_image = ?, ai_feedback_child = ?, ai_feedback_parent = ?, medical_evaluation = ?, ai_score = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?')
-          .run(data.summary, data.handwritingImage || null, data.aiFeedbackChild, data.aiFeedbackParent, data.medicalEvaluation || null, data.aiScore, data.id);
-        await db.prepare('UPDATE children SET points = points + ? WHERE id = ?').run(data.pointsReward, data.childId);
-        res.json({ success: true });
-      } else if (action === 'save_calligraphy_session') {
-        await db.prepare('INSERT INTO calligraphy_sessions (id, userId, childId, imageUrl, score, analysis_json, timestamp, parentId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-          .run(data.id, userId, data.childId, data.imageUrl, data.score, JSON.stringify(data.analysis), data.timestamp, data.parentId || null);
-        res.json({ success: true });
-      } else if (action === 'get_calligraphy_history') {
-        const sessions = await db.prepare('SELECT * FROM calligraphy_sessions WHERE childId = ? ORDER BY timestamp DESC').all(childId);
-        res.json(sessions.map((s: any) => ({ ...s, analysis: typeof s.analysis_json === 'string' ? JSON.parse(s.analysis_json || '{}') : (s.analysis_json || {}) })));
-      } else if (action === 'save_math_session') {
-        await db.prepare('INSERT INTO math_sessions (id, userId, childId, imageUrl, score, analysis_json, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)')
-          .run(data.id, userId, data.childId, data.imageUrl, data.score, JSON.stringify(data.analysis), data.timestamp);
-        res.json({ success: true });
-      } else if (action === 'get_math_history') {
-        const sessions = await db.prepare('SELECT * FROM math_sessions WHERE childId = ? ORDER BY timestamp DESC').all(childId);
-        res.json(sessions.map((s: any) => ({ ...s, analysis: typeof s.analysis_json === 'string' ? JSON.parse(s.analysis_json || '{}') : (s.analysis_json || {}) })));
-      } else if (action === 'save_reading_session') {
-        await db.prepare('INSERT INTO reading_sessions (id, userId, childId, audioUrl, score, analysis_json, timestamp, transcription) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-          .run(data.id, userId, data.childId, data.audioUrl || null, data.score, JSON.stringify(data.analysis), data.timestamp, data.transcription || null);
-        res.json({ success: true });
-      } else if (action === 'get_reading_history') {
-        const sessions = await db.prepare('SELECT * FROM reading_sessions WHERE childId = ? ORDER BY timestamp DESC').all(childId);
-        res.json(sessions.map((s: any) => ({ ...s, analysis: typeof s.analysis_json === 'string' ? JSON.parse(s.analysis_json || '{}') : (s.analysis_json || {}) })));
-      } else if (action === 'get_srs_reviews') {
-        const reviews = await db.prepare('SELECT * FROM srs_reviews WHERE childId = ? AND status = "pending"').all(childId);
-        res.json(reviews);
-      } else if (action === 'add_srs_review') {
-        await db.prepare('INSERT INTO srs_reviews (id, childId, topic, subject, scheduledDate, sourceId) VALUES (?, ?, ?, ?, ?, ?)')
-          .run(data.id, data.childId, data.topic, data.subject, data.scheduledDate, data.sourceId);
-        res.json({ success: true });
-      } else if (action === 'complete_srs_review') {
-        await db.prepare('UPDATE srs_reviews SET status = "completed" WHERE id = ?').run(id);
-        res.json({ success: true });
+        const task = await db.prepare('SELECT * FROM study_tasks WHERE id = ? AND childId = ?').get(String(data.id || ''), String(data.childId));
+        if (!task) return res.status(404).json({ error: 'No encuentro esa tarea.' });
+        if (task.status === 'completed') return res.status(409).json({ error: 'Esta tarea ya está hecha.' });
+        // Sin foto de la letra ni evaluaciones "psicológicas": solo el resumen y el comentario sobre lo estudiado
+        await db.prepare("UPDATE study_tasks SET status = 'completed', summary = ?, handwriting_image = NULL, ai_feedback_child = ?, ai_feedback_parent = ?, medical_evaluation = NULL, ai_score = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?")
+          .run(String(data.summary || '').slice(0, 4000), data.aiFeedbackChild || null, data.aiFeedbackParent || null, data.aiScore ?? null, task.id);
+        const pts = Math.max(0, Math.min(100, Number(task.points_reward) || 0));
+        await awardActivity(db, { userId, childId: String(data.childId), points: pts, source: 'study', label: `Tema estudiado: ${task.topicTitle}`, refId: task.id });
+        const book = await db.prepare('SELECT subject FROM books WHERE id = ?').get(task.bookId);
+        await addReviewTopic(db, { userId, childId: String(data.childId), subject: book?.subject || '', topic: task.topicTitle, sourceType: 'book', sourceId: task.id });
+        res.json({ success: true, points: pts });
+      } else {
+        res.status(400).json({ error: 'Acción no válida' });
       }
     } catch (e: any) {
       res.status(400).json({ error: e.message });
     }
   });
+
+  // Puntos, racha, medallas, cromos y premios de familia (antes que los módulos que dan puntos)
+  try {
+    await registerRewardsRoutes(app, {
+      db,
+      getSession,
+      isParentUnlocked,
+      refreshParentWindow: async (tokenHash: string) => {
+        await db.prepare('UPDATE sessions SET parent_until = ? WHERE token_hash = ?').run(Date.now() + PARENT_WINDOW_MS, tokenHash);
+      },
+    });
+  } catch (err) {
+    console.error('[PREMIOS] Error al iniciar premios:', err);
+  }
+
+  // Zona de juegos y prácticas de FP (sin IA)
+  try {
+    await registerGamesRoutes(app, {
+      db,
+      getSession,
+      isParentUnlocked,
+      refreshParentWindow: async (tokenHash: string) => {
+        await db.prepare('UPDATE sessions SET parent_until = ? WHERE token_hash = ?').run(Date.now() + PARENT_WINDOW_MS, tokenHash);
+      },
+    });
+  } catch (err) {
+    console.error('[JUEGOS] Error al iniciar los juegos:', err);
+  }
+
+  // Tutor "Pregúntame" (Claude, desde el servidor)
+  try {
+    await registerTutorRoutes(app, {
+      db,
+      getSession,
+      isParentUnlocked,
+      refreshParentWindow: async (tokenHash: string) => {
+        await db.prepare('UPDATE sessions SET parent_until = ? WHERE token_hash = ?').run(Date.now() + PARENT_WINDOW_MS, tokenHash);
+      },
+    });
+  } catch (err) {
+    console.error('[TUTOR] Error al iniciar el tutor:', err);
+  }
+
+  // Inglés (Claude en el servidor)
+  try {
+    await registerEnglishRoutes(app, {
+      db,
+      getSession,
+      isParentUnlocked,
+      refreshParentWindow: async (tokenHash: string) => {
+        await db.prepare('UPDATE sessions SET parent_until = ? WHERE token_hash = ?').run(Date.now() + PARENT_WINDOW_MS, tokenHash);
+      },
+    });
+  } catch (err) {
+    console.error('[INGLÉS] Error al iniciar Inglés:', err);
+  }
+
+  // Caligrafía (Claude en el servidor)
+  try {
+    await registerCalligraphyRoutes(app, {
+      db,
+      getSession,
+      isParentUnlocked,
+      refreshParentWindow: async (tokenHash: string) => {
+        await db.prepare('UPDATE sessions SET parent_until = ? WHERE token_hash = ?').run(Date.now() + PARENT_WINDOW_MS, tokenHash);
+      },
+    });
+  } catch (err) {
+    console.error('[CALIGRAFÍA] Error al iniciar Caligrafía:', err);
+  }
+
+  // Biblioteca: temas, esquemas y libros (Claude en el servidor)
+  try {
+    await registerLibraryRoutes(app, {
+      db,
+      getSession,
+      isParentUnlocked,
+      refreshParentWindow: async (tokenHash: string) => {
+        await db.prepare('UPDATE sessions SET parent_until = ? WHERE token_hash = ?').run(Date.now() + PARENT_WINDOW_MS, tokenHash);
+      },
+    });
+  } catch (err) {
+    console.error('[BIBLIOTECA] Error al iniciar la Biblioteca:', err);
+  }
+
+  // Mi semana (sin IA)
+  try {
+    await registerWeekRoutes(app, { db, getSession });
+  } catch (err) {
+    console.error('[SEMANA] Error al iniciar Mi semana:', err);
+  }
+
+  // Panel de padres: resumen, notas del cole y avisos de errores
+  try {
+    await registerParentRoutes(app, {
+      db,
+      getSession,
+      isParentUnlocked,
+      refreshParentWindow: async (tokenHash: string) => {
+        await db.prepare('UPDATE sessions SET parent_until = ? WHERE token_hash = ?').run(Date.now() + PARENT_WINDOW_MS, tokenHash);
+      },
+    });
+  } catch (err) {
+    console.error('[PADRES] Error al iniciar el panel de padres:', err);
+  }
+
+
+  // Deberes & Fichas (fotos, correcciones y fichas en el servidor)
+  try {
+    await registerWorksheetRoutes(app, {
+      db,
+      getSession,
+      isParentUnlocked,
+      refreshParentWindow: async (tokenHash: string) => {
+        await db.prepare('UPDATE sessions SET parent_until = ? WHERE token_hash = ?').run(Date.now() + PARENT_WINDOW_MS, tokenHash);
+      },
+    });
+  } catch (err) {
+    console.error('[FICHAS] Error al iniciar fichas:', err);
+  }
+
+  // Repasar: test, repaso espaciado y temarios
+  try {
+    await registerReviewRoutes(app, {
+      db,
+      getSession,
+      isParentUnlocked,
+      refreshParentWindow: async (tokenHash: string) => {
+        await db.prepare('UPDATE sessions SET parent_until = ? WHERE token_hash = ?').run(Date.now() + PARENT_WINDOW_MS, tokenHash);
+      },
+    });
+  } catch (err) {
+    console.error('[REPASO] Error al iniciar repasos:', err);
+  }
+
+  // Mates: reto de cálculo (sin IA)
+  try {
+    await registerMathRoutes(app, {
+      db,
+      getSession,
+      isParentUnlocked,
+      refreshParentWindow: async (tokenHash: string) => {
+        await db.prepare('UPDATE sessions SET parent_until = ? WHERE token_hash = ?').run(Date.now() + PARENT_WINDOW_MS, tokenHash);
+      },
+    });
+  } catch (err) {
+    console.error('[MATES] Error al iniciar Mates:', err);
+  }
+
+  // Lectura: biblioteca por curso, velocidad, comprensión y grabaciones
+  try {
+    await registerReadingRoutes(app, {
+      db,
+      getSession,
+      isParentUnlocked,
+      refreshParentWindow: async (tokenHash: string) => {
+        await db.prepare('UPDATE sessions SET parent_until = ? WHERE token_hash = ?').run(Date.now() + PARENT_WINDOW_MS, tokenHash);
+      },
+    });
+  } catch (err) {
+    console.error('[LECTURA] Error al iniciar Lectura:', err);
+  }
+
+  // Copia de seguridad diaria de la base de datos (en R2 en producción)
+  try {
+    await initBackups(db);
+  } catch (err) {
+    console.error('[COPIA] Error al preparar las copias de seguridad:', err);
+  }
 
   // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {

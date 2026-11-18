@@ -4,7 +4,7 @@ import { authService } from '../services/authService';
 import { APP_VERSION, APP_YEAR } from '../version';
 
 interface AuthScreenProps {
-  onAuthenticated: (userId: string, email: string, pin: string) => void;
+  onAuthenticated: (userId: string, email: string, needsPinSetup: boolean) => void;
   onDemo: () => void;
 }
 
@@ -30,13 +30,14 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onAuthenticated, onDemo }) => {
     try {
       if (mode === 'register') {
         if (parentPin.length !== 4) throw new Error('El PIN debe tener 4 dígitos.');
+        if (password.length < 8) throw new Error('La contraseña debe tener al menos 8 caracteres.');
         const data = await authService.register(email, password, parentPin);
         if (data.error) throw new Error(data.error);
-        onAuthenticated(data.userId, data.email, data.pin);
+        onAuthenticated(data.userId, data.email, !!data.needsPinSetup);
       } else if (mode === 'login') {
         const data = await authService.login(email, password);
         if (data.error) throw new Error(data.error);
-        onAuthenticated(data.userId, data.email, data.pin);
+        onAuthenticated(data.userId, data.email, !!data.needsPinSetup);
       } else if (mode === 'forgot') {
         const res = await authService.resetPassword(email, parentPin, password);
         if (!res.success) throw new Error(res.error || 'Error al resetear.');
@@ -102,11 +103,16 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onAuthenticated, onDemo }) => {
             <div className="space-y-1">
               <label className="text-[10px] font-black text-indigo-800 uppercase ml-1">PIN Parental (4 dígitos)</label>
               <input 
-                type="text" maxLength={4} required value={parentPin}
+                type="password" inputMode="numeric" autoComplete="off" maxLength={4} required value={parentPin}
                 onChange={(e) => setParentPin(e.target.value.replace(/\D/g, ''))}
                 className="w-full bg-indigo-50/50 border-2 border-indigo-100 rounded-2xl px-5 py-3.5 focus:border-[#00B4D8] outline-none text-indigo-900 text-sm text-center font-black"
-                placeholder="0000"
+                placeholder="••••"
               />
+              {mode === 'register' && (
+                <p className="text-[10px] text-indigo-400 font-bold ml-1">
+                  Se pedirá para entrar en la zona de padres. No uses 1234 ni cifras repetidas, y no se lo digas a tus hijos.
+                </p>
+              )}
             </div>
           )}
 

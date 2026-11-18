@@ -1,758 +1,262 @@
-import React, { useState, useEffect } from 'react';
-import { EnglishLevel, EnglishProgress, EnglishLesson, EnglishEvaluation, PlacementTest } from '../../types/english';
-import { englishService } from '../../services/englishService';
-import { Child, GradeLevel, Subject } from '../../types';
-import { motion, AnimatePresence } from 'motion/react';
+import React, { useEffect, useState } from 'react';
+import { Child } from '../../types';
+import { englishService, speakEnglish, EnglishState, EnglishLessonView, LessonResult } from '../../services/englishService';
+import { LEVEL_LABEL } from '../../shared/englishBank';
 
-interface EnglishModuleProps {
+interface Props {
   child: Child;
-  userId: string;
-  onActivityLog?: (question: string, subject: Subject, answer: any) => void;
+  isDemo?: boolean;
+  /** Con cuenta: el servidor ha dado los puntos */
+  onPoints?: (newPoints: number, earned: number) => void;
+  /** Demo: puntos simulados */
+  onDemoPoints?: (points: number) => void;
 }
 
-const EnglishModule: React.FC<EnglishModuleProps> = ({ child, userId, onActivityLog }) => {
-  const [progress, setProgress] = useState<EnglishProgress | null>(null);
-  const [lesson, setLesson] = useState<EnglishLesson | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [view, setView] = useState<'intro' | 'test' | 'lesson' | 'summary'>('intro');
-  const [evaluation, setEvaluation] = useState<EnglishEvaluation | null>(null);
-  const [answers, setAnswers] = useState<Record<string, number>>({});
-  const [placementQuestions, setPlacementQuestions] = useState<{ question: string; options: string[]; correctIndex: number; level: EnglishLevel }[]>([]);
-  const [placementAnswers, setPlacementAnswers] = useState<number[]>([]);
-  const [officialTest, setOfficialTest] = useState<PlacementTest | null>(null);
-  const [currentTestSectionIdx, setCurrentTestSectionIdx] = useState(0);
-  const [testAnswers, setTestAnswers] = useState<Record<string, number>>({});
-  const [testWriting, setTestWriting] = useState('');
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [writingText, setWritingText] = useState('');
-  const [isRecording, setIsRecording] = useState(false);
-  const [speakingTranscript, setSpeakingTranscript] = useState('');
-  const [speakingScore, setSpeakingScore] = useState<number | null>(null);
-  const [speakingFeedback, setSpeakingFeedback] = useState<string>('');
-  const [activePhraseIndex, setActivePhraseIndex] = useState<number>(0);
-  const [isAudioModelPlaying, setIsAudioModelPlaying] = useState(false);
-  const speechRecognitionRef = React.useRef<any>(null);
-  const startTimeRef = React.useRef<number | null>(null);
+type Phase = 'home' | 'placement' | 'placement_result' | 'lesson' | 'result';
 
-  useEffect(() => {
-    fetchProgress();
-  }, [child.id]);
+// Lección de ejemplo para la demo (sin servidor ni IA)
+const DEMO_LESSON: EnglishLessonView = {
+  attemptId: 'demo', level: 'A1', levelLabel: LEVEL_LABEL.A1, theme: 'animals',
+  lesson: {
+    title: 'Animals on the farm',
+    vocabulary: [
+      { en: 'cow', es: 'vaca', example: 'The cow gives us milk.' }, { en: 'horse', es: 'caballo', example: 'The horse is very fast.' },
+      { en: 'sheep', es: 'oveja', example: 'Sheep live on farms.' }, { en: 'duck', es: 'pato', example: 'The duck can swim.' },
+    ],
+    grammar: { title: 'Can / can\'t', explanation: 'Usamos "can" para decir lo que alguien sabe o puede hacer, y "can\'t" para lo que no puede.', examples: ['A duck can swim.', 'A cow can\'t fly.'] },
+    phrases: ['The horse can run fast.', 'I like the little duck.'],
+    reading: { text: 'Lucy lives on a farm. She has a horse called Star and two ducks. Every morning, Lucy gives the animals food. Star can run very fast, but the ducks can swim in the pond.', questions: [
+      { q: 'Where does Lucy live?', options: ['On a farm', 'In a city', 'Near the sea', 'In a flat'] },
+      { q: 'What is the horse called?', options: ['Star', 'Lucy', 'Duck', 'Pond'] },
+      { q: 'What can the ducks do?', options: ['Swim', 'Fly to school', 'Run fast', 'Talk'] },
+    ] },
+    listening: { text: 'Hello! My name is Tom. I have got a dog and a cat. My dog is big and brown. My cat is small and white.', questions: [
+      { q: 'What colour is the dog?', options: ['Brown', 'White', 'Black', 'Grey'] },
+      { q: 'Is the cat big or small?', options: ['Small', 'Big', 'Very big', 'Tall'] },
+    ] },
+    writing: { prompt: 'Write about your favourite animal. What can it do?', promptEs: 'Escribe sobre tu animal favorito. ¿Qué sabe hacer?', minWords: 15 },
+  },
+};
 
-  useEffect(() => {
-    if (view === 'lesson') {
-      startTimeRef.current = Date.now();
-    }
-  }, [view]);
+const McList: React.FC<{ qs: { q: string; options: string[] }[]; answers: number[]; setAnswers: (a: number[]) => void; result?: boolean[]; keyIdx?: number[]; name: string }> = ({ qs, answers, setAnswers, result, keyIdx, name }) => (
+  <div className="space-y-4">
+    {qs.map((x, i) => (
+      <fieldset key={i} className="space-y-2" data-testid={`${name}-q`}>
+        <legend className="font-bold text-slate-800 text-sm">{i + 1}. {x.q}</legend>
+        <div className="grid sm:grid-cols-2 gap-2">
+          {x.options.map((o, j) => {
+            const chosen = answers[i] === j;
+            const good = keyIdx && keyIdx[i] === j;
+            const cls = result ? (good ? 'bg-emerald-50 border-emerald-400 text-emerald-800' : chosen ? 'bg-red-50 border-red-300 text-red-700' : 'bg-white border-slate-200 text-slate-500')
+              : chosen ? 'bg-blue-600 border-blue-600 text-white' : 'bg-white border-slate-200 text-slate-700 hover:border-blue-300';
+            return (
+              <label key={j} className={`cursor-pointer rounded-xl border-2 px-3 py-2 text-sm font-semibold transition-all ${cls}`}>
+                <input type="radio" name={`${name}-${i}`} className="sr-only" disabled={!!result} checked={chosen} onChange={() => { const a = [...answers]; a[i] = j; setAnswers(a); }} />
+                {o}{result && good ? ' ✓' : ''}
+              </label>
+            );
+          })}
+        </div>
+      </fieldset>
+    ))}
+  </div>
+);
 
-  const fetchProgress = async () => {
+/** Inglés: prueba de nivel, lección del día (vocabulario, gramática, audición, lectura y redacción). */
+const EnglishModule: React.FC<Props> = ({ child, isDemo, onPoints, onDemoPoints }) => {
+  const [phase, setPhase] = useState<Phase>('home');
+  const [state, setState] = useState<EnglishState | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [placement, setPlacement] = useState<{ placementId: string; questions: { id: string; question: string; options: string[] }[] } | null>(null);
+  const [pAnswers, setPAnswers] = useState<number[]>([]);
+  const [pResult, setPResult] = useState<{ levelLabel: string } | null>(null);
+  const [lesson, setLesson] = useState<EnglishLessonView | null>(null);
+  const [rAns, setRAns] = useState<number[]>([]);
+  const [lAns, setLAns] = useState<number[]>([]);
+  const [writing, setWriting] = useState('');
+  const [result, setResult] = useState<LessonResult | null>(null);
+
+  const loadState = () => {
+    if (isDemo) { setState({ level: 'A1', levelLabel: LEVEL_LABEL.A1, placed: true, lessonsAtLevel: 2, promoteAfter: 5, pointsToday: 0, pointsCap: 80, lessonsToday: 0, lessonsPerDay: 4 }); return; }
+    englishService.state(child.id).then(setState).catch((e) => setError(e.message));
+  };
+  useEffect(() => { loadState(); setPhase('home'); }, [child.id, isDemo]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const startPlacement = async () => {
+    if (isDemo) { setError('La prueba de nivel necesita una cuenta.'); return; }
+    setBusy(true); setError(null);
+    try { const p = await englishService.placementStart(child.id); setPlacement(p); setPAnswers([]); setPhase('placement'); }
+    catch (e: any) { setError(e.message); } finally { setBusy(false); }
+  };
+  const submitPlacement = async () => {
+    if (!placement) return;
+    setBusy(true);
     try {
-      const response = await fetch(`api_english.php?action=get_progress`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ childId: child.id })
-      });
-      const data = await response.json();
-      if (data.status === 'success') {
-        setProgress(data.data);
-      } else {
-        setProgress({
-          userId,
-          childId: child.id,
-          currentLevel: 'Pre-A1 Starters',
-          points: 0,
-          completedLessons: [],
-          lastActive: Date.now(),
-          streak: 0
-        });
-      }
-    } catch (err) {
-      console.error("Error fetching progress", err);
-    } finally {
-      setLoading(false);
-    }
+      const r = await englishService.placementSubmit(child.id, placement.placementId, placement.questions.map((_, i) => (pAnswers[i] ?? -1)));
+      setPResult({ levelLabel: r.levelLabel }); setPhase('placement_result'); loadState();
+    } catch (e: any) { setError(e.message); } finally { setBusy(false); }
   };
 
-  const saveProgress = async (newProgress: EnglishProgress) => {
+  const startLesson = async () => {
+    setBusy(true); setError(null);
     try {
-      await fetch(`api_english.php?action=save_progress`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newProgress)
-      });
-      setProgress(newProgress);
-    } catch (err) {
-      console.error("Error saving progress", err);
-    }
+      const l = isDemo ? DEMO_LESSON : await englishService.lessonStart(child.id);
+      setLesson(l); setRAns([]); setLAns([]); setWriting(''); setResult(null); setPhase('lesson');
+    } catch (e: any) { setError(e.message); } finally { setBusy(false); }
   };
 
-  const startPlacementTest = async () => {
-    setLoading(true);
+  const submitLesson = async () => {
+    if (!lesson) return;
+    if (isDemo) {
+      const key = { reading: [0, 0, 0], listening: [0, 0] };
+      const reading = lesson.lesson.reading.questions.map((_, i) => rAns[i] === 0);
+      const listening = lesson.lesson.listening.questions.map((_, i) => lAns[i] === 0);
+      const mcCorrect = [...reading, ...listening].filter(Boolean).length;
+      const pts = 10 + 3 * mcCorrect;
+      onDemoPoints?.(pts);
+      setResult({ mcCorrect, mcTotal: 5, reading, listening, key, writing: writing.trim() ? { error: 'En la demo no se corrige la redacción. Con una cuenta, un profesor de IA te la corrige.' } : null, points: pts, newPoints: 0, promoted: null });
+      setPhase('result'); return;
+    }
+    setBusy(true); setError(null);
     try {
-      const test = await englishService.generateOfficialPlacementTest(child.grade);
-      setOfficialTest(test);
-      setCurrentTestSectionIdx(0);
-      setTestAnswers({});
-      setTestWriting('');
-      setView('test');
-    } catch (err) {
-      console.error("Error in placement test", err);
-    } finally {
-      setLoading(false);
-    }
+      const r = await englishService.lessonSubmit(child.id, lesson.attemptId, lesson.lesson.reading.questions.map((_, i) => rAns[i] ?? -1), lesson.lesson.listening.questions.map((_, i) => lAns[i] ?? -1), writing);
+      setResult(r); setPhase('result');
+      onPoints?.(r.newPoints, r.points);
+      loadState();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (e: any) { setError(e.message); } finally { setBusy(false); }
   };
 
-  const submitPlacementTest = async () => {
-    if (!officialTest) return;
-    
-    setIsSubmitting(true);
-    try {
-      let totalQuestions = 0;
-      let correctCount = 0;
-      let levelPoints: Record<string, number> = {
-        'Pre-A1 Starters': 0,
-        'A1 Movers': 0,
-        'A2 Flyers': 0,
-        'A2 Key': 0,
-        'B1 Preliminary': 0,
-        'B2 First': 0
-      };
-
-      officialTest.sections.forEach(section => {
-        section.questions.forEach(q => {
-          totalQuestions++;
-          if (testAnswers[`${section.id}_${q.id}`] === q.correctIndex) {
-            correctCount++;
-            levelPoints[q.level] = (levelPoints[q.level] || 0) + 1;
-          }
-        });
-      });
-
-      const score = (correctCount / totalQuestions) * 100;
-      
-      // Determine level based on the highest level where they got most questions right
-      let finalLevel: EnglishLevel = 'Pre-A1 Starters';
-      const levels: EnglishLevel[] = ['Pre-A1 Starters', 'A1 Movers', 'A2 Flyers', 'A2 Key', 'B1 Preliminary', 'B2 First'];
-      
-      for (const lvl of levels) {
-        if (levelPoints[lvl] > 0) finalLevel = lvl;
-      }
-
-      // Final adjustment based on total score
-      if (score > 90) finalLevel = 'B2 First';
-      else if (score > 75) finalLevel = 'B1 Preliminary';
-      else if (score > 60) finalLevel = 'A2 Key';
-      else if (score > 45) finalLevel = 'A2 Flyers';
-      else if (score > 30) finalLevel = 'A1 Movers';
-
-      if (progress) {
-        const updated = { ...progress, currentLevel: finalLevel };
-        await saveProgress(updated);
-        setView('intro');
-      }
-    } catch (err) {
-      console.error("Error submitting placement test", err);
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  const handleTestAnswer = (sectionId: string, questionId: string, optionIdx: number) => {
-    setTestAnswers(prev => ({
-      ...prev,
-      [`${sectionId}_${questionId}`]: optionIdx
-    }));
-  };
-
-  const handleAnswerSelection = (section: string, questionIdx: number, optionIdx: number) => {
-    setAnswers(prev => ({
-      ...prev,
-      [`${section}_${questionIdx}`]: optionIdx
-    }));
-  };
-
-  const handlePlacementAnswer = (questionIdx: number, optionIdx: number) => {
-    const newAnswers = [...placementAnswers];
-    newAnswers[questionIdx] = optionIdx;
-    setPlacementAnswers(newAnswers);
-  };
-
-  const submitWriting = async () => {
-    if (!writingText.trim() || !lesson) return;
-    setLoading(true);
-    try {
-      const evalResult = await englishService.evaluateWriting(writingText, lesson.skills.writing.prompt, lesson.level);
-      setEvaluation(evalResult);
-      // Award points based on score
-      if (progress) {
-        const pointsEarned = Math.floor(evalResult.score / 10);
-        const updated = { ...progress, points: progress.points + pointsEarned };
-        await saveProgress(updated);
-      }
-    } catch (err) {
-      console.error("Error evaluating writing", err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const playModelAudio = (text: string) => {
-    if (!('speechSynthesis' in window)) {
-      alert("Tu navegador no soporta síntesis de voz.");
-      return;
-    }
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = 'en-US';
-    utterance.rate = 0.88; // clear cadence for children
-    utterance.pitch = 1.05;
-    
-    // Try to find English voice
-    const voices = window.speechSynthesis.getVoices();
-    const englishVoice = voices.find(v => v.lang.startsWith('en') && (v.name.includes('Natural') || v.name.includes('Samantha') || v.name.includes('Google') || v.name.includes('US')));
-    if (englishVoice) utterance.voice = englishVoice;
-
-    setIsAudioModelPlaying(true);
-    utterance.onend = () => setIsAudioModelPlaying(false);
-    utterance.onerror = () => setIsAudioModelPlaying(false);
-    window.speechSynthesis.speak(utterance);
-  };
-
-  const calculatePronunciationScore = (spokenText: string, targetPhrase: string) => {
-    const cleanSpoken = spokenText.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
-    const cleanTarget = targetPhrase.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
-
-    if (cleanTarget.length === 0 || cleanSpoken.length === 0) return 0;
-
-    let matches = 0;
-    cleanTarget.forEach(targetWord => {
-      if (cleanSpoken.some(spokenWord => spokenWord === targetWord || spokenWord.includes(targetWord) || targetWord.includes(spokenWord))) {
-        matches++;
-      }
-    });
-
-    const accuracy = Math.min(100, Math.round((matches / cleanTarget.length) * 100));
-    return accuracy;
-  };
-
-  const toggleRecording = () => {
-    if (isRecording) {
-      if (speechRecognitionRef.current) {
-        speechRecognitionRef.current.stop();
-      }
-      setIsRecording(false);
-      return;
-    }
-
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      alert("Tu navegador no soporta reconocimiento de voz nativo. Te sugerimos usar Google Chrome o Safari.");
-      return;
-    }
-
-    try {
-      const recognition = new SpeechRecognition();
-      speechRecognitionRef.current = recognition;
-      recognition.lang = 'en-US';
-      recognition.continuous = true;
-      recognition.interimResults = true;
-
-      setSpeakingTranscript('');
-      setSpeakingScore(null);
-      setSpeakingFeedback('');
-      setIsRecording(true);
-
-      const targetPhrase = lesson?.skills.speaking.suggestedPhrases[activePhraseIndex] || lesson?.skills.speaking.topic || "";
-
-      recognition.onresult = (event: any) => {
-        let transcript = '';
-        for (let i = 0; i < event.results.length; i++) {
-          transcript += event.results[i][0].transcript + ' ';
-        }
-        const trimmed = transcript.trim();
-        setSpeakingTranscript(trimmed);
-
-        const score = calculatePronunciationScore(trimmed, targetPhrase);
-        setSpeakingScore(score);
-
-        if (score >= 80) {
-          setSpeakingFeedback("🌟 Fantastic! Natural pronunciation! (+15 XP)");
-        } else if (score >= 50) {
-          setSpeakingFeedback("👍 Good pronunciation! Keep it up! (+10 XP)");
-        } else {
-          setSpeakingFeedback("💪 Good attempt! Listen to the model and pronounce clearly.");
-        }
-      };
-
-      recognition.onerror = (event: any) => {
-        console.warn("Speech recognition notice:", event.error);
-        if (event.error !== 'no-speech') {
-          setIsRecording(false);
-        }
-      };
-
-      recognition.onend = () => {
-        setIsRecording(false);
-        const duration = startTimeRef.current ? Math.floor((Date.now() - startTimeRef.current) / 1000) : 0;
-        
-        // Award XP if completed with decent score
-        if (speakingScore && speakingScore >= 50 && progress) {
-          const xp = speakingScore >= 80 ? 15 : 10;
-          const updated = { ...progress, points: progress.points + xp };
-          saveProgress(updated);
-        }
-
-        if (onActivityLog && speakingTranscript) {
-          onActivityLog(`Speaking en Inglés: ${lesson?.skills.speaking.topic}`, "Inglés", {
-            text: `Práctica oral de inglés (${targetPhrase})`,
-            type: 'english_speaking',
-            duration,
-            score: speakingScore,
-            transcription: speakingTranscript
-          });
-        }
-      };
-
-      recognition.start();
-    } catch (e) {
-      console.error("Error starting speech recognition", e);
-      setIsRecording(false);
-    }
-  };
-
-  const loadDailyLesson = async () => {
-    if (!progress) return;
-    setLoading(true);
-    try {
-      const newLesson = await englishService.generateDailyLesson(progress.currentLevel, child.name, child.grade);
-      setLesson(newLesson);
-      setView('lesson');
-    } catch (err) {
-      console.error("Error generating lesson", err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  if (loading) {
-    return (
-      <div className="flex flex-col items-center justify-center p-12">
-        <div className="w-16 h-16 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4"></div>
-        <p className="text-slate-600 font-medium">Preparing your English mission...</p>
-      </div>
-    );
-  }
+  const wc = writing.trim().split(/\s+/).filter(Boolean).length;
+  const allAnswered = lesson && lesson.lesson.reading.questions.every((_, i) => rAns[i] !== undefined) && lesson.lesson.listening.questions.every((_, i) => lAns[i] !== undefined);
 
   return (
-    <div className="max-w-4xl mx-auto p-6">
-      <header className="flex justify-between items-center mb-8">
-        <div>
-          <h2 className="text-3xl font-bold text-slate-800 flex items-center gap-3">
-            🇬🇧 English Academy
-          </h2>
-          <p className="text-slate-500">Cambridge Method • Level: <span className="font-bold text-blue-600">{progress?.currentLevel}</span></p>
-        </div>
-        <div className="flex gap-4">
-          <div className="bg-amber-100 text-amber-700 px-4 py-2 rounded-xl font-bold flex items-center gap-2">
-            ⭐ {progress?.points} pts
+    <div className="max-w-3xl mx-auto space-y-6 animate-in fade-in" data-testid="english">
+      <div className="bg-gradient-to-br from-blue-600 to-indigo-700 rounded-[2rem] p-6 text-white shadow-xl">
+        <p className="text-[10px] font-black uppercase tracking-widest opacity-80">🇬🇧 Inglés</p>
+        <h2 className="text-2xl font-black">{phase === 'lesson' && lesson ? lesson.lesson.title : `Hello, ${child.name}!`}</h2>
+        {state && <p className="text-sm text-blue-100 mt-1" data-testid="english-level">Tu nivel: <b>{state.levelLabel}</b>{state.placed ? '' : ' (sin prueba de nivel)'} · Puntos de inglés hoy: {state.pointsToday}/{state.pointsCap}</p>}
+      </div>
+      {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-2xl px-4 py-3 text-sm font-bold" role="alert">{error}</div>}
+
+      {phase === 'home' && state && (
+        <div className="grid md:grid-cols-2 gap-4">
+          <div className="bg-white rounded-[2rem] p-6 border border-blue-50 space-y-3">
+            <h3 className="font-black text-lg text-blue-900">📘 Lección del día</h3>
+            <p className="text-sm text-slate-600">Vocabulario, un poco de gramática, escuchar, leer y escribir. Unos 15 minutos.</p>
+            <p className="text-xs text-slate-400">Lecciones hoy: {state.lessonsToday}/{state.lessonsPerDay} · Llevas {state.lessonsAtLevel} en tu nivel (subes al hacer {state.promoteAfter} con buena nota).</p>
+            <button onClick={startLesson} disabled={busy} className="w-full bg-blue-600 text-white rounded-xl py-3 font-black" data-testid="start-lesson">{busy ? 'Preparando…' : '¡Empezar!'}</button>
           </div>
-          <div className="bg-orange-100 text-orange-700 px-4 py-2 rounded-xl font-bold flex items-center gap-2">
-            🔥 {progress?.streak} days
+          <div className="bg-white rounded-[2rem] p-6 border border-blue-50 space-y-3">
+            <h3 className="font-black text-lg text-blue-900">🎯 Prueba de nivel</h3>
+            <p className="text-sm text-slate-600">25 preguntas para saber qué nivel te va mejor. No pasa nada si no sabes alguna: elige la que te parezca.</p>
+            <button onClick={startPlacement} disabled={busy} className="w-full bg-white border-2 border-blue-200 text-blue-700 rounded-xl py-3 font-black" data-testid="start-placement">{state.placed ? 'Repetir la prueba' : 'Hacer la prueba'}</button>
           </div>
         </div>
-      </header>
+      )}
 
-      <AnimatePresence mode="wait">
-        {view === 'intro' && (
-          <motion.div 
-            key="intro"
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -20 }}
-            className="glass-card p-8 rounded-3xl text-center"
-          >
-            <div className="text-6xl mb-6">🎓</div>
-            <h3 className="text-2xl font-bold text-slate-800 mb-4">Welcome to your English Journey!</h3>
-            <p className="text-slate-600 mb-8 max-w-md mx-auto">
-              Ready to improve your English with the Cambridge method? Every day you'll have a new mission to practice your Listening, Reading, Writing, and Speaking.
-            </p>
-            <div className="flex flex-col sm:flex-row gap-4 justify-center">
-              <button 
-                onClick={loadDailyLesson}
-                className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-4 rounded-2xl font-bold shadow-lg transition-all"
-              >
-                🚀 Start Daily Lesson
-              </button>
-              <button 
-                onClick={startPlacementTest}
-                className="bg-white border-2 border-blue-200 text-blue-600 hover:bg-blue-50 px-8 py-4 rounded-2xl font-bold transition-all"
-              >
-                ⚖️ Level Test
-              </button>
+      {phase === 'placement' && placement && (
+        <div className="bg-white rounded-[2rem] p-6 border border-blue-50 space-y-5" data-testid="placement">
+          <p className="text-sm text-slate-500">Elige la respuesta correcta. Las preguntas van de más fácil a más difícil.</p>
+          <McList name="placement" qs={placement.questions.map((x) => ({ q: x.question, options: x.options }))} answers={pAnswers} setAnswers={setPAnswers} />
+          <button onClick={submitPlacement} disabled={busy} className="w-full bg-blue-600 text-white rounded-xl py-3 font-black" data-testid="submit-placement">{busy ? 'Calculando…' : 'Ver mi nivel'}</button>
+        </div>
+      )}
+
+      {phase === 'placement_result' && pResult && (
+        <div className="bg-white rounded-[2rem] p-8 border border-blue-50 text-center space-y-4" data-testid="placement-result">
+          <p className="text-5xl">🎉</p>
+          <p className="text-xl font-black text-blue-900">Tu nivel es {pResult.levelLabel}</p>
+          <p className="text-sm text-slate-500">Las lecciones se adaptan a este nivel. Cuando lo domines, subirás solo.</p>
+          <button onClick={startLesson} className="bg-blue-600 text-white rounded-xl px-6 py-3 font-black">Empezar una lección</button>
+        </div>
+      )}
+
+      {phase === 'lesson' && lesson && (
+        <div className="space-y-5" data-testid="lesson">
+          <section className="bg-white rounded-[2rem] p-6 border border-blue-50 space-y-3">
+            <h3 className="font-black text-blue-900">1. Vocabulario</h3>
+            <div className="grid sm:grid-cols-2 gap-2">
+              {lesson.lesson.vocabulary.map((v, i) => (
+                <button key={i} onClick={() => speakEnglish(`${v.en}. ${v.example}`)} className="text-left bg-blue-50 rounded-xl p-3 hover:bg-blue-100">
+                  <p className="font-black text-blue-900">🔊 {v.en} <span className="font-semibold text-slate-500">· {v.es}</span></p>
+                  <p className="text-xs text-slate-600 italic">{v.example}</p>
+                </button>
+              ))}
             </div>
-          </motion.div>
-        )}
-
-        {view === 'test' && officialTest && (
-          <motion.div 
-            key="test"
-            initial={{ opacity: 0, x: 20 }}
-            animate={{ opacity: 1, x: 0 }}
-            className="space-y-8"
-          >
-            <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-100">
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="text-2xl font-bold text-slate-800">Official Placement Test</h3>
-                <span className="bg-blue-100 text-blue-700 px-4 py-1 rounded-full text-xs font-bold">
-                  Section {currentTestSectionIdx + 1} of {officialTest.sections.length + 1}
-                </span>
-              </div>
-              <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
-                <div 
-                  className="bg-blue-600 h-full transition-all duration-500" 
-                  style={{ width: `${((currentTestSectionIdx + 1) / (officialTest.sections.length + 1)) * 100}%` }}
-                ></div>
-              </div>
-            </div>
-
-            {currentTestSectionIdx < officialTest.sections.length ? (
-              <div className="space-y-6">
-                <div className="bg-blue-50 p-6 rounded-2xl border border-blue-100">
-                  <h4 className="font-bold text-blue-800 mb-2">{officialTest.sections[currentTestSectionIdx].title}</h4>
-                  <p className="text-sm text-blue-600 italic mb-4">{officialTest.sections[currentTestSectionIdx].instructions}</p>
-                  {(officialTest.sections[currentTestSectionIdx] as any).text && (
-                    <div className="bg-white p-6 rounded-xl border border-blue-100 text-slate-700 leading-relaxed mb-6">
-                      {(officialTest.sections[currentTestSectionIdx] as any).text}
-                    </div>
-                  )}
-                </div>
-
-                <div className="space-y-6">
-                  {officialTest.sections[currentTestSectionIdx].questions.map((q, idx) => (
-                    <div key={q.id} className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-                      <p className="font-bold text-slate-800 mb-4">{idx + 1}. {q.question}</p>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        {q.options.map((opt, oIdx) => (
-                          <button
-                            key={oIdx}
-                            onClick={() => handleTestAnswer(officialTest.sections[currentTestSectionIdx].id, q.id, oIdx)}
-                            className={`p-4 text-left rounded-xl transition-all border ${
-                              testAnswers[`${officialTest.sections[currentTestSectionIdx].id}_${q.id}`] === oIdx
-                              ? 'bg-blue-600 text-white border-blue-600 shadow-md'
-                              : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-blue-50'
-                            }`}
-                          >
-                            {opt}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="flex justify-between pt-4">
-                  <button
-                    onClick={() => setCurrentTestSectionIdx(prev => Math.max(0, prev - 1))}
-                    disabled={currentTestSectionIdx === 0}
-                    className="bg-white border border-slate-200 text-slate-600 px-8 py-3 rounded-xl font-bold hover:bg-slate-50 disabled:opacity-30"
-                  >
-                    Previous
-                  </button>
-                  <button
-                    onClick={() => setCurrentTestSectionIdx(prev => prev + 1)}
-                    className="bg-blue-600 text-white px-8 py-3 rounded-xl font-bold hover:bg-blue-700"
-                  >
-                    Next Section
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-6">
-                <div className="bg-purple-50 p-6 rounded-2xl border border-purple-100">
-                  <h4 className="font-bold text-purple-800 mb-2">Final Section: Writing</h4>
-                  <p className="text-sm text-purple-600 italic mb-4">Write a short composition based on the prompt below.</p>
-                  <div className="bg-white p-6 rounded-xl border border-purple-100 text-slate-700 leading-relaxed mb-6">
-                    <strong>Prompt:</strong> {officialTest.writingPrompt.prompt}
-                    <br />
-                    <small className="text-slate-400">(Min. {officialTest.writingPrompt.minWords} words)</small>
-                  </div>
-                  <textarea
-                    className="w-full p-6 rounded-2xl border border-purple-200 min-h-[250px] outline-none focus:ring-2 focus:ring-purple-400 transition-all"
-                    placeholder="Start writing here..."
-                    value={testWriting}
-                    onChange={(e) => setTestWriting(e.target.value)}
-                  ></textarea>
-                </div>
-
-                <div className="flex justify-between pt-4">
-                  <button
-                    onClick={() => setCurrentTestSectionIdx(prev => prev - 1)}
-                    className="bg-white border border-slate-200 text-slate-600 px-8 py-3 rounded-xl font-bold hover:bg-slate-50"
-                  >
-                    Back to Questions
-                  </button>
-                  <button
-                    onClick={submitPlacementTest}
-                    disabled={isSubmitting || testWriting.split(' ').filter(w => w.length > 0).length < officialTest.writingPrompt.minWords}
-                    className="bg-blue-600 text-white px-12 py-4 rounded-2xl font-bold shadow-xl hover:bg-blue-700 transition-all disabled:opacity-50"
-                  >
-                    {isSubmitting ? 'Evaluating...' : 'Finish & Submit Test'}
-                  </button>
-                </div>
+          </section>
+          <section className="bg-white rounded-[2rem] p-6 border border-blue-50 space-y-2">
+            <h3 className="font-black text-blue-900">2. {lesson.lesson.grammar.title}</h3>
+            <p className="text-sm text-slate-700">{lesson.lesson.grammar.explanation}</p>
+            <ul className="text-sm text-slate-600 list-disc pl-5">{lesson.lesson.grammar.examples.map((e, i) => <li key={i}>{e}</li>)}</ul>
+            {lesson.lesson.phrases.length > 0 && (
+              <div className="flex flex-wrap gap-2 pt-2">
+                {lesson.lesson.phrases.map((p, i) => <button key={i} onClick={() => speakEnglish(p, 0.8)} className="bg-slate-100 rounded-full px-3 py-1 text-xs font-bold text-slate-700">🔊 {p}</button>)}
               </div>
             )}
-          </motion.div>
-        )}
-
-        {view === 'lesson' && lesson && (
-          <motion.div 
-            key="lesson"
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="space-y-6"
-          >
-            <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100">
-              <h3 className="text-xl font-bold text-slate-800 mb-2">{lesson.title}</h3>
-              <p className="text-slate-500">{lesson.description}</p>
+          </section>
+          <section className="bg-white rounded-[2rem] p-6 border border-blue-50 space-y-3">
+            <h3 className="font-black text-blue-900">3. Escucha</h3>
+            <p className="text-xs text-slate-500">Pulsa para escucharlo las veces que quieras (sin ver el texto) y contesta.</p>
+            <div className="flex gap-2">
+              <button onClick={() => speakEnglish(lesson.lesson.listening.text)} className="bg-indigo-600 text-white rounded-xl px-4 py-2 font-black text-sm" data-testid="listen">🔊 Escuchar</button>
+              <button onClick={() => speakEnglish(lesson.lesson.listening.text, 0.7)} className="bg-indigo-50 text-indigo-700 rounded-xl px-4 py-2 font-black text-sm">🐢 Más despacio</button>
             </div>
+            <McList name="listening" qs={lesson.lesson.listening.questions} answers={lAns} setAnswers={setLAns} />
+          </section>
+          <section className="bg-white rounded-[2rem] p-6 border border-blue-50 space-y-3">
+            <h3 className="font-black text-blue-900">4. Lee</h3>
+            <p className="text-sm leading-relaxed text-slate-800 bg-amber-50/50 rounded-xl p-4" data-testid="reading-text">{lesson.lesson.reading.text}</p>
+            <McList name="reading" qs={lesson.lesson.reading.questions} answers={rAns} setAnswers={setRAns} />
+          </section>
+          <section className="bg-white rounded-[2rem] p-6 border border-blue-50 space-y-3">
+            <h3 className="font-black text-blue-900">5. Escribe</h3>
+            <p className="text-sm text-slate-800 font-semibold">{lesson.lesson.writing.prompt}</p>
+            {lesson.lesson.writing.promptEs && <p className="text-xs text-slate-500">{lesson.lesson.writing.promptEs}</p>}
+            <textarea value={writing} onChange={(e) => setWriting(e.target.value)} rows={5} maxLength={2000} className="w-full rounded-xl border-2 border-slate-200 p-3 text-sm outline-none focus:border-blue-400" placeholder="Write here…" data-testid="writing" />
+            <p className={`text-xs font-bold ${wc >= lesson.lesson.writing.minWords ? 'text-emerald-600' : 'text-slate-400'}`}>{wc} / {lesson.lesson.writing.minWords} palabras</p>
+          </section>
+          <button onClick={submitLesson} disabled={busy || !allAnswered} className="w-full bg-emerald-500 disabled:bg-slate-300 text-white rounded-2xl py-4 font-black text-lg" data-testid="submit-lesson">
+            {busy ? 'Corrigiendo…' : allAnswered ? 'Terminar la lección' : 'Contesta todas las preguntas'}
+          </button>
+        </div>
+      )}
 
-            {/* Listening Section */}
-            <section className="bg-blue-50 p-6 rounded-3xl border border-blue-100">
-              <h4 className="font-bold text-blue-800 mb-4 flex items-center gap-2">🎧 Listening Practice</h4>
-              <div className="bg-white p-4 rounded-2xl mb-4 flex items-center justify-between gap-4">
-                <p className="text-sm text-slate-600 italic">"Listen to the teacher and answer the questions below."</p>
-                <button 
-                  onClick={() => playModelAudio(lesson.skills.reading.text || "Listen carefully to the audio and choose the correct answer.")}
-                  className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2 text-white shadow-md transition-all ${
-                    isAudioModelPlaying ? 'bg-amber-500 animate-pulse' : 'bg-blue-600 hover:bg-blue-700'
-                  }`}
-                  title="Play model voice"
-                >
-                  <span>{isAudioModelPlaying ? '🔊 Playing...' : '🔊 Play Audio'}</span>
-                </button>
-              </div>
-              <div className="space-y-4">
-                {lesson.skills.listening.questions.map((q, idx) => (
-                  <div key={idx} className="bg-white/50 p-4 rounded-xl">
-                    <p className="font-medium text-slate-800 mb-2">{q.question}</p>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                      {q.options.map((opt, oIdx) => (
-                        <button 
-                          key={oIdx} 
-                          onClick={() => handleAnswerSelection('listening', idx, oIdx)}
-                          className={`p-2 text-sm rounded-lg transition-all border ${
-                            answers[`listening_${idx}`] === oIdx 
-                            ? 'bg-blue-600 text-white border-blue-600 shadow-md' 
-                            : 'bg-white border-blue-200 text-blue-600 hover:bg-blue-50'
-                          }`}
-                        >
-                          {opt}
-                        </button>
+      {phase === 'result' && result && lesson && (
+        <div className="space-y-5" data-testid="lesson-result">
+          <div className="bg-white rounded-[2rem] p-6 border border-blue-50 text-center space-y-2">
+            <p className="text-4xl">{result.mcCorrect === result.mcTotal ? '🏆' : '👏'}</p>
+            <p className="text-xl font-black text-blue-900" data-testid="mc-score">{result.mcCorrect} de {result.mcTotal} respuestas bien</p>
+            <p className="text-sm font-bold text-amber-600">+{result.points} puntos</p>
+            {result.promoted && <p className="bg-emerald-50 text-emerald-800 rounded-xl px-4 py-2 font-black" data-testid="promoted">🚀 ¡Subes de nivel! Ahora estás en {result.promoted}</p>}
+          </div>
+          {result.writing && (
+            <div className="bg-white rounded-[2rem] p-6 border border-blue-50 space-y-3" data-testid="writing-result">
+              <h3 className="font-black text-blue-900">Tu redacción {result.writing.score !== undefined ? `· ${result.writing.score}/10` : ''}</h3>
+              {result.writing.error ? <p className="text-sm text-slate-600">{result.writing.error}</p> : (
+                <>
+                  <p className="text-sm text-slate-700">{result.writing.feedback}</p>
+                  {(result.writing.corrections || []).length > 0 && (
+                    <ul className="space-y-2">
+                      {result.writing.corrections!.map((c, i) => (
+                        <li key={i} className="text-sm bg-slate-50 rounded-xl p-3"><span className="line-through text-red-600">{c.original}</span> → <b className="text-emerald-700">{c.correction}</b><br /><span className="text-xs text-slate-500">{c.explanation}</span></li>
                       ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </section>
-
-            {/* Reading Section */}
-            <section className="bg-emerald-50 p-6 rounded-3xl border border-emerald-100">
-              <h4 className="font-bold text-emerald-800 mb-4 flex items-center gap-2">📖 Reading Time</h4>
-              <div className="bg-white p-6 rounded-2xl mb-4 text-slate-700 leading-relaxed">
-                {lesson.skills.reading.text}
-              </div>
-              <div className="space-y-4">
-                {lesson.skills.reading.questions.map((q, idx) => (
-                  <div key={idx} className="bg-white/50 p-4 rounded-xl">
-                    <p className="font-medium text-slate-800 mb-2">{q.question}</p>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                      {q.options.map((opt, oIdx) => (
-                        <button 
-                          key={oIdx} 
-                          onClick={() => handleAnswerSelection('reading', idx, oIdx)}
-                          className={`p-2 text-sm rounded-lg transition-all border ${
-                            answers[`reading_${idx}`] === oIdx 
-                            ? 'bg-emerald-600 text-white border-emerald-600 shadow-md' 
-                            : 'bg-white border-emerald-200 text-emerald-600 hover:bg-emerald-50'
-                          }`}
-                        >
-                          {opt}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </section>
-
-            {/* Writing Section */}
-            <section className="bg-purple-50 p-6 rounded-3xl border border-purple-100">
-              <h4 className="font-bold text-purple-800 mb-4 flex items-center gap-2">✍️ Writing Mission</h4>
-              <p className="text-slate-700 mb-4">{lesson.skills.writing.prompt}</p>
-              <textarea 
-                className="w-full p-4 rounded-2xl border border-purple-200 min-h-[150px] outline-none focus:ring-2 focus:ring-purple-400 transition-all"
-                placeholder="Write your answer here..."
-                value={writingText}
-                onChange={(e) => setWritingText(e.target.value)}
-              ></textarea>
-              <div className="flex justify-end mt-4">
-                <button 
-                  onClick={submitWriting}
-                  className="bg-purple-600 text-white px-6 py-2 rounded-xl font-bold hover:bg-purple-700 transition-all"
-                >
-                  Submit Writing
-                </button>
-              </div>
-              {evaluation && (
-                <div className="mt-6 bg-white p-6 rounded-2xl border border-purple-200 shadow-sm animate-in slide-in-from-top">
-                  <div className="flex justify-between items-center mb-4">
-                    <h5 className="font-bold text-purple-900">Evaluation Result</h5>
-                    <span className="bg-purple-100 text-purple-700 px-3 py-1 rounded-full text-sm font-bold">{evaluation.score}/100</span>
-                  </div>
-                  <p className="text-slate-600 mb-4 italic">"{evaluation.feedback}"</p>
-                  <div className="space-y-3">
-                    {evaluation.corrections.map((c, i) => (
-                      <div key={i} className="text-sm p-3 bg-slate-50 rounded-lg border border-slate-100">
-                        <p className="text-red-500 line-through mb-1">{c.original}</p>
-                        <p className="text-emerald-600 font-bold mb-1">{c.correction}</p>
-                        <p className="text-slate-500 text-xs">{c.explanation}</p>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="mt-4 p-3 bg-blue-50 rounded-lg text-blue-800 text-sm">
-                    <strong>Next steps:</strong> {evaluation.nextSteps}
-                  </div>
-                </div>
-              )}
-            </section>
-
-            {/* Speaking Section */}
-            <section className="bg-orange-50 p-6 rounded-3xl border border-orange-100">
-              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 mb-4">
-                <div>
-                  <h4 className="font-bold text-orange-800 flex items-center gap-2">🗣️ Live Speaking Practice</h4>
-                  <p className="text-slate-600 text-xs">Pronounce clearly in English. The app detects your voice in real time.</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const phraseToSpeak = lesson.skills.speaking.suggestedPhrases[activePhraseIndex] || lesson.skills.speaking.topic;
-                    playModelAudio(phraseToSpeak);
-                  }}
-                  className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2 border shadow-sm transition-all ${
-                    isAudioModelPlaying 
-                      ? 'bg-amber-500 text-white border-amber-600 animate-pulse' 
-                      : 'bg-white text-orange-700 border-orange-200 hover:bg-orange-100'
-                  }`}
-                >
-                  <span>{isAudioModelPlaying ? '🔊 Listening Model...' : '🔊 Listen Native Model'}</span>
-                </button>
-              </div>
-
-              <div className="bg-white/80 p-4 rounded-2xl border border-orange-100 mb-4">
-                <p className="text-xs font-bold text-orange-900 mb-2 uppercase tracking-wide">
-                  Topic: <span className="text-slate-700 font-normal">{lesson.skills.speaking.topic}</span>
-                </p>
-                <p className="text-xs text-slate-500 mb-2">Tap any sentence below to practice it:</p>
-                <div className="flex flex-wrap gap-2">
-                  {lesson.skills.speaking.suggestedPhrases.map((phrase, idx) => (
-                    <button
-                      key={idx}
-                      type="button"
-                      onClick={() => {
-                        setActivePhraseIndex(idx);
-                        setSpeakingScore(null);
-                        setSpeakingTranscript('');
-                        setSpeakingFeedback('');
-                      }}
-                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all border text-left ${
-                        activePhraseIndex === idx
-                          ? 'bg-orange-600 text-white border-orange-600 shadow-md scale-105'
-                          : 'bg-white text-orange-700 border-orange-200 hover:bg-orange-50'
-                      }`}
-                    >
-                      {activePhraseIndex === idx ? '🎯 ' : ''}"{phrase}"
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Target phrase highlight */}
-              <div className="bg-orange-100/70 p-4 rounded-2xl border border-orange-200 mb-4 text-center">
-                <span className="text-xs font-black uppercase text-orange-700 block mb-1">Target phrase to pronounce:</span>
-                <p className="text-base sm:text-lg font-black text-slate-800">
-                  "{lesson.skills.speaking.suggestedPhrases[activePhraseIndex] || lesson.skills.speaking.topic}"
-                </p>
-              </div>
-
-              {/* Live Voice Indicator & Controls */}
-              <div className="flex flex-col items-center justify-center gap-3">
-                <button 
-                  type="button"
-                  onClick={toggleRecording}
-                  className={`w-20 h-20 rounded-full flex items-center justify-center text-3xl shadow-lg transition-all active:scale-95 ${
-                    isRecording ? 'bg-red-500 text-white animate-pulse ring-8 ring-red-200' : 'bg-orange-500 text-white hover:scale-110'
-                  }`}
-                  title={isRecording ? 'Stop Recording' : 'Start Live Speaking'}
-                >
-                  {isRecording ? '⏹️' : '🎙️'}
-                </button>
-                <span className="text-xs font-bold text-slate-600">
-                  {isRecording ? 'Escuchando en inglés... ¡Habla ahora!' : 'Toca el micrófono para comenzar a hablar'}
-                </span>
-              </div>
-
-              {/* Real-time Transcription & Score */}
-              {(isRecording || speakingTranscript || speakingScore !== null) && (
-                <div className="mt-5 bg-white p-5 rounded-2xl border border-orange-200 shadow-sm animate-in fade-in duration-300">
-                  <div className="flex items-center justify-between gap-2 mb-2 pb-2 border-b border-slate-100">
-                    <span className="text-xs font-black uppercase text-slate-500">Live Voice Transcription:</span>
-                    {speakingScore !== null && (
-                      <span className={`px-3 py-1 rounded-full text-xs font-black ${
-                        speakingScore >= 80 
-                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' 
-                          : speakingScore >= 50 
-                          ? 'bg-amber-100 text-amber-800 border border-amber-300' 
-                          : 'bg-red-100 text-red-800 border border-red-300'
-                      }`}>
-                        {speakingScore}% Accuracy
-                      </span>
-                    )}
-                  </div>
-
-                  <p className="text-slate-800 font-medium italic min-h-[32px]">
-                    {speakingTranscript || <span className="text-slate-400">Habla en inglés frente al micrófono...</span>}
-                  </p>
-
-                  {speakingFeedback && (
-                    <div className="mt-3 p-3 rounded-xl bg-orange-50 border border-orange-100 text-xs font-bold text-orange-900">
-                      {speakingFeedback}
-                    </div>
+                    </ul>
                   )}
-                </div>
+                  {result.writing.nextStep && <p className="text-xs text-blue-700 font-bold">👉 {result.writing.nextStep}</p>}
+                </>
               )}
-            </section>
-
-            <div className="flex justify-center pt-8">
-              <button 
-                onClick={() => {
-                  const duration = startTimeRef.current ? Math.floor((Date.now() - startTimeRef.current) / 1000) : 0;
-                  if (onActivityLog) {
-                    onActivityLog(`Lección de Inglés: ${lesson?.title}`, "Inglés", {
-                      text: `Completada lección de nivel ${progress?.currentLevel}`,
-                      type: 'english_lesson',
-                      duration
-                    });
-                  }
-                  setView('intro');
-                }}
-                className="bg-slate-800 text-white px-12 py-4 rounded-2xl font-bold shadow-xl hover:bg-slate-900 transition-all"
-              >
-                🏁 Finish Lesson
-              </button>
             </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          )}
+          <div className="bg-white rounded-[2rem] p-6 border border-blue-50 space-y-4">
+            <h3 className="font-black text-blue-900">Repasa tus respuestas</h3>
+            <McList name="r-listening" qs={lesson.lesson.listening.questions} answers={lAns} setAnswers={() => {}} result={result.listening} keyIdx={result.key.listening} />
+            <McList name="r-reading" qs={lesson.lesson.reading.questions} answers={rAns} setAnswers={() => {}} result={result.reading} keyIdx={result.key.reading} />
+          </div>
+          <button onClick={() => { setPhase('home'); setLesson(null); }} className="w-full bg-blue-600 text-white rounded-2xl py-3 font-black">Volver</button>
+        </div>
+      )}
     </div>
   );
 };

@@ -1,88 +1,45 @@
+// Cliente del reto de cálculo (Mates). Sin IA: todo se calcula en el navegador y se comprueba de nuevo en el servidor.
+import type { MathProblem } from '../shared/mathOps';
 
-import { Type } from "@google/genai";
-import { ai } from "./geminiService";
-import { MathAnalysis } from "../types/math";
+const call = async (action: string, body: any) => {
+  let res: Response;
+  try {
+    res = await fetch(`api_math.php?action=${action}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(body) });
+  } catch {
+    throw new Error('Sin conexión. Revisa internet e inténtalo de nuevo.');
+  }
+  let data: any = {};
+  try { data = await res.json(); } catch { /* vacío */ }
+  if (!res.ok) throw new Error(data.error || 'Algo ha fallado. Inténtalo de nuevo.');
+  return data;
+};
+
+export interface MathConfig {
+  answerStyle: 'choice' | 'typed' | null;
+  record: number; pointsToday: number; pointsCap: number; pointsLeft: number;
+  weak: { key: string; label: string; accuracy: number }[];
+  mistakes: MathProblem[];
+}
+export interface ChallengeResult {
+  correct: number; wrong: number; bestStreak: number; points: number; pointsCapReached: boolean; pointsLeft: number;
+  newPoints: number; record: number; newRecord: boolean; previousRecord: number;
+  weak: { key: string; label: string; accuracy: number }[];
+}
+export interface MathParentStats {
+  weeks: { from: number; challenges: number; accuracy: number | null; correct: number }[];
+  thisWeek: { challenges: number; accuracy: number | null; correct: number };
+  byFamily: { family: string; accuracy: number; total: number }[];
+  weak: { key: string; label: string; accuracy: number; example: string | null }[];
+  record: number;
+  recent: { mode: string; table: number | null; correct: number; wrong: number; bestStreak: number; points: number; createdAt: number }[];
+  pointsToday: number; pointsCap: number;
+  settings: { answerStyle: 'choice' | 'typed' | null };
+}
 
 export const mathService = {
-  async analyzeMathProblem(base64Image: string, grade: string): Promise<MathAnalysis> {
-    const prompt = `Analiza esta imagen de una operación matemática (suma, resta, multiplicación o división) realizada por un niño de ${grade}.
-    Evalúa:
-    1. Tema: Identifica el tema matemático (ej: "Multiplicación por dos cifras", "Fracciones", "Divisiones exactas").
-    2. Pasos: Identifica cada paso de la operación.
-    3. Errores: Detecta errores lógicos o de cálculo.
-    4. Explicación: Explica por qué se cometió el error y cómo corregirlo.
-    
-    Genera una puntuación del 1 al 10 y un feedback motivador.
-    Sugiere 2 ejercicios similares para practicar.`;
-
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: [
-        {
-          parts: [
-            { text: prompt },
-            {
-              inlineData: {
-                mimeType: "image/jpeg",
-                data: base64Image.split(',')[1] || base64Image
-              }
-            }
-          ]
-        }
-      ],
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            topic: { type: Type.STRING },
-            score: { type: Type.NUMBER },
-            steps: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  stepNumber: { type: Type.NUMBER },
-                  description: { type: Type.STRING },
-                  isCorrect: { type: Type.BOOLEAN },
-                  explanation: { type: Type.STRING }
-                },
-                required: ["stepNumber", "description", "isCorrect", "explanation"]
-              }
-            },
-            errors: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  location: { type: Type.STRING },
-                  errorType: { type: Type.STRING },
-                  correction: { type: Type.STRING },
-                  explanation: { type: Type.STRING }
-                },
-                required: ["location", "errorType", "correction", "explanation"]
-              }
-            },
-            generalFeedback: { type: Type.STRING },
-            suggestedExercises: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  title: { type: Type.STRING },
-                  problem: { type: Type.STRING },
-                  difficulty: { type: Type.STRING, enum: ["fácil", "medio", "difícil"] },
-                  solution: { type: Type.STRING }
-                },
-                required: ["title", "problem", "difficulty"]
-              }
-            }
-          },
-          required: ["topic", "score", "steps", "errors", "generalFeedback", "suggestedExercises"]
-        }
-      }
-    });
-
-    return JSON.parse(response.text || '{}') as MathAnalysis;
-  }
+  config: (childId: string, mode: string, table?: number): Promise<MathConfig> => call('config', { childId, mode, table }),
+  saveChallenge: (p: { childId: string; mode: string; table?: number; answerStyle: string; levelStart: number; levelEnd: number; duration: number; answers: { problem: MathProblem; given: number | null }[] }): Promise<ChallengeResult> =>
+    call('save_challenge', p),
+  parentStats: (childId: string): Promise<MathParentStats> => call('parent_stats', { childId }),
+  setAnswerStyle: (childId: string, answerStyle: 'choice' | 'typed' | null) => call('set_settings', { childId, answerStyle }),
 };

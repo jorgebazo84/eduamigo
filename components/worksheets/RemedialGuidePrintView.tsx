@@ -135,9 +135,11 @@ export const RemedialGuidePrintView: React.FC<RemedialGuidePrintViewProps> = ({
           <p className="text-xs text-amber-900 leading-relaxed font-semibold">
             {homeworkRecord.whatChildIsMissing}
           </p>
-          <p className="text-[11px] text-slate-600 pt-1 border-t border-amber-200/80">
-            <strong>Observación para la familia:</strong> {homeworkRecord.summaryDiagnosis}
-          </p>
+          {homeworkRecord.summaryDiagnosis && (
+            <p className="text-[11px] text-slate-600 pt-1 border-t border-amber-200/80">
+              <strong>Observación para la familia:</strong> {homeworkRecord.summaryDiagnosis}
+            </p>
+          )}
         </div>
 
         {/* 2. Explicación general adaptada a su curso */}

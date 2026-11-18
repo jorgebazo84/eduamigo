@@ -22,9 +22,9 @@
     <!-- Global Browser Polyfills & Error Safety Net -->
     <script>
       (function() {
-        // 1. Polyfill process & global for browser environments (@google/genai, google-logging-utils)
+        // 1. Polyfill process & global for browser environments
         window.process = window.process || {
-          env: { NODE_ENV: 'development', GEMINI_API_KEY: '' },
+          env: { NODE_ENV: 'development' },
           stderr: null,
           stdout: null,
           browser: true,

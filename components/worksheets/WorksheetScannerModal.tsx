@@ -1,21 +1,31 @@
+import ReportErrorButton from '../ReportErrorButton';
 import React, { useState, useRef } from 'react';
 import { PrintableWorksheet, WorksheetCorrection } from '../../types/worksheets';
 import { worksheetService } from '../../services/worksheetService';
+import { fileToDataUrl } from '../../services/imageUtils';
 
 interface WorksheetScannerModalProps {
   worksheet: PrintableWorksheet;
   onClose: () => void;
   onCorrectionComplete: (worksheet: PrintableWorksheet, correction: WorksheetCorrection) => void;
+  /** @deprecated los puntos los suma quien recibe onCorrectionComplete (antes se sumaban dos veces) */
   onAwardPoints?: (points: number) => void;
+  /** Vista del niño: sin diagnóstico para la familia ni soluciones */
+  isStudent?: boolean;
+  /** Foto ya hecha (desde el botón "Hago una foto"): se corrige directamente */
+  initialImage?: string | null;
+  isDemo?: boolean;
 }
 
 export const WorksheetScannerModal: React.FC<WorksheetScannerModalProps> = ({
   worksheet,
   onClose,
   onCorrectionComplete,
-  onAwardPoints,
+  isStudent = false,
+  initialImage = null,
+  isDemo,
 }) => {
-  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(initialImage);
   const [isProcessing, setIsProcessing] = useState(false);
   const [correctionResult, setCorrectionResult] = useState<WorksheetCorrection | null>(worksheet.correction || null);
   const [error, setError] = useState<string | null>(null);
@@ -68,12 +78,7 @@ export const WorksheetScannerModal: React.FC<WorksheetScannerModalProps> = ({
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        setImagePreview(event.target?.result as string);
-        stopCamera();
-      };
-      reader.readAsDataURL(file);
+      fileToDataUrl(file).then((url) => { setImagePreview(url); stopCamera(); }).catch((err) => setError(err.message));
     }
   };
 
@@ -83,15 +88,12 @@ export const WorksheetScannerModal: React.FC<WorksheetScannerModalProps> = ({
     setError(null);
 
     try {
-      const correction = await worksheetService.correctWorksheetPhoto(worksheet, imagePreview);
-      setCorrectionResult(correction);
-      onCorrectionComplete(worksheet, correction);
-      if (onAwardPoints && correction.awardedXp) {
-        onAwardPoints(correction.awardedXp);
-      }
+      const res = await worksheetService.correctWorksheetPhoto(worksheet, imagePreview);
+      setCorrectionResult(res.correction);
+      onCorrectionComplete(res.worksheet, res.correction);
     } catch (err: any) {
-      console.error('Error analyzing worksheet photo:', err);
-      setError('Ocurrió un error al procesar la imagen con la IA. Por favor verifica que la foto tenga buena luz e inténtalo de nuevo.');
+      // El servidor explica qué ha pasado (sin conexión, límite diario, foto ilegible, IA no disponible…)
+      setError(err?.message || 'No se ha podido corregir la ficha. Inténtalo de nuevo.');
     } finally {
       setIsProcessing(false);
     }
@@ -118,6 +120,7 @@ export const WorksheetScannerModal: React.FC<WorksheetScannerModalProps> = ({
               stopCamera();
               onClose();
             }}
+            aria-label="Cerrar"
             className="text-slate-400 hover:text-slate-600 font-black p-2 text-lg"
           >
             ✕
@@ -238,6 +241,7 @@ export const WorksheetScannerModal: React.FC<WorksheetScannerModalProps> = ({
         ) : (
           /* RESULTADO DE LA CORRECCIÓN */
           <div className="space-y-6">
+            <ReportErrorButton childId={worksheet.childId} kind="worksheet" refId={worksheet.id} isDemo={isDemo} className="text-right" />
             {/* Tarjeta de Calificación y XP */}
             <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-5 flex items-center justify-between">
               <div className="space-y-1">
@@ -264,6 +268,7 @@ export const WorksheetScannerModal: React.FC<WorksheetScannerModalProps> = ({
             </div>
 
             {/* Diagnóstico para Padres */}
+            {!isStudent && (
             <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-2">
               <h4 className="text-xs font-black text-slate-800 flex items-center gap-1.5">
                 <span>👨‍👩‍👧 Diagnóstico Pedagógico para la Familia:</span>
@@ -275,6 +280,7 @@ export const WorksheetScannerModal: React.FC<WorksheetScannerModalProps> = ({
                 💡 <strong>Observación de proceso:</strong> {correctionResult.pedagogicalInsight}
               </p>
             </div>
+            )}
 
             {/* Análisis Ejercicio por Ejercicio */}
             <div className="space-y-3">
@@ -299,12 +305,22 @@ export const WorksheetScannerModal: React.FC<WorksheetScannerModalProps> = ({
                         {ex.studentAnswer}
                       </span>
                     </div>
-                    <p className="text-[11px] text-slate-700 mt-0.5">
-                      {ex.stepAnalysis}
-                    </p>
+                    {ex.stepAnalysis && (
+                      <p className="text-[11px] text-slate-700 mt-0.5">
+                        {ex.stepAnalysis}
+                      </p>
+                    )}
+                    {(ex as any).unreadable && (
+                      <p className="text-[10px] text-slate-500 italic mt-1">No se leía bien en la foto.</p>
+                    )}
                     {ex.feedback && (
                       <p className="text-[10px] text-blue-700 font-bold mt-1">
                         💬 {ex.feedback}
+                      </p>
+                    )}
+                    {!ex.isCorrect && (ex as any).hint && (
+                      <p className="text-[11px] text-amber-800 font-bold mt-1">
+                        💡 Pista: {(ex as any).hint}
                       </p>
                     )}
                   </div>
@@ -335,7 +351,7 @@ export const WorksheetScannerModal: React.FC<WorksheetScannerModalProps> = ({
                 }}
                 className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-black text-xs rounded-xl shadow-md"
               >
-                Entendido y Guardar Informe
+                Entendido
               </button>
             </div>
           </div>

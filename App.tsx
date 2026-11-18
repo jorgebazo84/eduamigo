@@ -1,38 +1,36 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { GradeLevel, Subject, ExplanationResponse, HistoryItem, ViewMode, UserRole, Region, ExamResult, Child, Reward, Country, CalendarEvent, Task, StudentRequest, EventType, SchoolCommunication, QuickNote, LocationState, Coordinate, RoutePoint, Insight, AcademicGrade, StudyPlan, AICorrection, DailyStudyReport, ReviewPlan } from './types';
+import { GradeLevel, Subject, ExplanationResponse, HistoryItem, ViewMode, UserRole, Region, ExamResult, Child, Reward, Country, CalendarEvent, Task, StudentRequest, EventType, SchoolCommunication, QuickNote, LocationState, Coordinate, RoutePoint, Insight, AcademicGrade, StudyPlan, AICorrection } from './types';
 import { requestNotificationPermission, checkUpcomingEvents, sendLocalNotification } from './services/notificationService';
-import { getExplanation, generateSpeech, getSyllabus, getTopicDetail, generateExam, analyzeExamResults, searchAddressViaGemini, reverseGeocodeViaGemini, generateStudyPlan, evaluateReviewTask } from './services/geminiService';
 import Header from './components/Header';
 import HistorySidebar from './components/HistorySidebar';
 import ParentDashboard from './components/ParentDashboard';
 import Login from './components/Login';
 import AuthScreen from './components/AuthScreen';
 import ParentAuthModal from './components/ParentAuthModal';
+import SetPinModal from './components/SetPinModal';
+import { authService } from './services/authService';
 import LibraryBrowser from './components/LibraryBrowser';
-import ExamMode from './components/ExamMode';
+import ExamMode, { ReviewTarget } from './components/ExamMode';
+import type { WorksheetIntent } from './components/MathModule';
+import RepasarView from './components/review/RepasarView';
+import TodayReviewBanner from './components/review/TodayReviewBanner';
 import ChildSelector from './components/ChildSelector';
 import RewardsShop from './components/RewardsShop';
-import SOSModal from './components/SOSModal';
-import StudentInquiry from './components/StudentInquiry';
-import ChatInterface from './components/ChatInterface';
-import LocationHub from './components/LocationHub';
-import VisionTutor from './components/VisionTutor';
-import OralPractice from './components/OralPractice';
+import TutorChat from './components/TutorChat';
+import { tutorService, TutorConversationSummary } from './services/tutorService';
 import GamificationCenter from './components/GamificationCenter';
-import StudyPlanner from './components/StudyPlanner';
-import SchoolDocumentScanner from './components/SchoolDocumentScanner';
+import { useRewards } from './components/rewards/useRewards';
+import CelebrationModal from './components/rewards/CelebrationModal';
+import { rewardsService } from './services/rewardsService';
+import MyWeek from './components/MyWeek';
 import StudyModuleContainer from './components/StudyModuleContainer';
 import CalligraphyModule from './components/CalligraphyModule';
 import ReadingModule from './components/ReadingModule';
 import MathModule from './components/MathModule';
-import SRSReviewModule from './components/SRSReviewModule';
 import PomodoroTimer from './components/PomodoroTimer';
-import StaticContentLibrary from './components/StaticContentLibrary';
-import { srsService } from './services/srsService';
-import DailyStudyRecorder from './components/DailyStudyRecorder';
-import ReviewTaskModule from './components/ReviewTaskModule';
 import EnglishModule from './components/english/EnglishModule';
+import GamesZone from './components/games/GamesZone';
 import { WorksheetHub } from './components/worksheets/WorksheetHub';
 import { APP_VERSION, APP_YEAR } from './version';
 import { OfflineStatusBanner } from './components/OfflineStatusBanner';
@@ -64,13 +62,27 @@ const safeStorage = {
 const App: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
-  const [parentPin, setParentPin] = useState('1234');
+  // Sesión comprobada con el servidor al arrancar (evita enseñar el login un instante)
+  const [authChecked, setAuthChecked] = useState(false);
+  // Cuenta antigua con PIN débil (p. ej. 1234): hay que elegir uno nuevo
+  const [needsPinSetup, setNeedsPinSetup] = useState(false);
+  const [showChangePin, setShowChangePin] = useState(false);
+  // Qué hacer después de meter bien el PIN: abrir el panel, cerrar sesión...
+  const [afterPin, setAfterPin] = useState<{ action: 'parent' | 'logout'; tab?: string } | null>(null);
+  const [parentInitialTab, setParentInitialTab] = useState<string | undefined>(undefined);
   const [userRole, setUserRole] = useState<UserRole>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('ask');
   const [region, setRegion] = useState<Region>('Madrid');
   const [isParentUnlocked, setIsParentUnlocked] = useState(false);
+  // Foto de "No sé hacer este ejercicio" pendiente de abrir en Pregúntame
+  const [tutorImage, setTutorImage] = useState<string | null>(null);
+  // Mates → Deberes & Fichas: abrir la foto, corregir la pizarra o filtrar las fichas de mates
+  const [worksheetIntent, setWorksheetIntent] = useState<WorksheetIntent | null>(null);
   const [showAuthModal, setShowAuthModal] = useState(false);
-  const [showSOSModal, setShowSOSModal] = useState(false);
+  // Tutor "Pregúntame": historial de conversaciones del niño activo y conversación a abrir
+  const [tutorConversations, setTutorConversations] = useState<TutorConversationSummary[]>([]);
+  const [openConversationId, setOpenConversationId] = useState<string | null>(null);
+  const [unseenTutorAlerts, setUnseenTutorAlerts] = useState(0);
   
   const [children, setChildren] = useState<Child[]>([]);
   const [activeChildId, setActiveChildId] = useState<string | null>(null);
@@ -79,57 +91,45 @@ const App: React.FC = () => {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [examHistory, setExamHistory] = useState<ExamResult[]>([]);
-  const [requests, setRequests] = useState<StudentRequest[]>([]);
-  const [communications, setCommunications] = useState<SchoolCommunication[]>([]);
-  const [quickNotes, setQuickNotes] = useState<QuickNote[]>([]);
-  const [locationStates, setLocationStates] = useState<LocationState[]>([]);
-  const [academicGrades, setAcademicGrades] = useState<AcademicGrade[]>([]);
-  const [studyPlans, setStudyPlans] = useState<Record<string, StudyPlan>>({});
-  const [aiCorrections, setAiCorrections] = useState<AICorrection[]>([]);
-  const [dailyReports, setDailyReports] = useState<DailyStudyReport[]>([]);
-  const [reviewPlans, setReviewPlans] = useState<ReviewPlan[]>([]);
-  const [activeSRSReview, setActiveSRSReview] = useState<{ topic: string, subject: Subject, id: string } | null>(null);
+  // Repaso en curso (desde "Hoy toca repasar") y aviso para refrescar el contador
+  const [activeReview, setActiveReview] = useState<ReviewTarget | null>(null);
+  const [reviewRefresh, setReviewRefresh] = useState(0);
   const [books, setBooks] = useState<any[]>([]);
-  const [loadingPlan, setLoadingPlan] = useState(false);
   
   const [toast, setToast] = useState<{ msg: string; type: 'info' | 'success' | 'error' } | null>(null);
-  const [showDiagnostics, setShowDiagnostics] = useState(false);
-  const [diagStatus, setDiagStatus] = useState<{ key: string; status: string }>({ key: 'Checking...', status: 'Idle' });
 
-  const handleStartSRSReview = (topic: string, subject: Subject, reviewId: string) => {
-    setActiveSRSReview({ topic, subject, id: reviewId });
+  const startReview = (item: ReviewTarget) => {
+    setActiveReview(item);
     setViewMode('exam');
-  };
-
-  const handleCompleteSRSReview = async (reviewId: string) => {
-    if (activeChildId) {
-      await srsService.completeReview(reviewId, activeChildId);
-      setActiveSRSReview(null);
-    }
   };
 
   const activeChild = children.find(c => c.id === activeChildId) || null;
 
-  const runDiagnostics = async () => {
-    const key = process.env.GEMINI_API_KEY;
-    const keyPreview = key ? `${key.substring(0, 5)}...${key.substring(key.length - 4)}` : 'MISSING';
-    setDiagStatus({ key: keyPreview, status: 'Testing connection...' });
-    
-    try {
-      const { ai } = await import('./services/geminiService');
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: "Hi",
-      });
-      if (response.text) {
-        setDiagStatus({ key: keyPreview, status: '✅ Success!' });
-      } else {
-        setDiagStatus({ key: keyPreview, status: '❌ Empty response' });
-      }
-    } catch (e: any) {
-      setDiagStatus({ key: keyPreview, status: `❌ Error: ${e.message}` });
-    }
+  // Puntos, racha, medallas, cromos y premios: siempre los decide el servidor (opción 7)
+  const patchChild = (childId: string, patch: Partial<Child>) =>
+    setChildren(prev => prev.map(c => c.id === childId ? { ...c, ...patch, streak: { ...c.streak, ...(patch.streak || {}) } } : c));
+  const rewardsCtl = useRewards({ child: activeChild, isDemo: userRole === 'demo', demoRewards: rewards, onChildUpdate: patchChild });
+
+  // El servidor ya ha sumado los puntos: se actualiza la pantalla y se mira si hay medallas nuevas
+  const applyServerPoints = (childId: string, newPoints: number, earned: number) => {
+    patchChild(childId, { points: newPoints });
+    if (earned > 0) showToast(`¡Ganas ${earned} puntos! ⭐`, "success");
+    setReviewRefresh(n => n + 1);
+    if (childId === activeChildId) rewardsCtl.refresh();
   };
+
+  // Un módulo avisa de que el servidor ha podido dar puntos (tutor, fichas, caligrafía…): se piden el saldo y las novedades
+  const syncChildPoints = async (childId: string | null) => {
+    if (!childId || userRole === 'demo') return;
+    const before = children.find(c => c.id === childId)?.points ?? 0;
+    let after: number | null = null;
+    if (childId === activeChildId) after = (await rewardsCtl.refresh())?.points ?? null;
+    else {
+      try { const s = await rewardsService.summary(childId); after = s.points; patchChild(childId, { points: s.points }); } catch { /* sin conexión */ }
+    }
+    if (after !== null && after > before) showToast(`¡Ganas ${after - before} puntos! ⭐`, "success");
+  };
+
   const showToast = (msg: string, type: 'info' | 'success' | 'error' = 'info') => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 3000);
@@ -138,7 +138,7 @@ const App: React.FC = () => {
   const loadDemoData = () => {
     const demoChild: Child = { 
       id: 'demo-hugo', name: 'Hugo Invitado', avatar: '👦', points: 120, grade: '4º Primaria', 
-      badges: ['math-10'], streak: { current: 3, lastActive: Date.now(), multiplier: 1.2 } 
+      badges: ['first_step', 'streak3'], streak: { current: 3, best: 5, activeToday: true, lastActive: Date.now() } 
     };
     const demoRewards: Reward[] = [
       { id: 'r1', title: '30 min Consola', pointsCost: 500, icon: '🎮' },
@@ -158,11 +158,9 @@ const App: React.FC = () => {
       if (data.children) {
         const mappedChildren = data.children.map((c: any) => ({
           ...c,
-          streak: {
-            current: parseInt(c.streak_current) || 1,
-            lastActive: parseInt(c.streak_lastActive) || Date.now(),
-            multiplier: parseFloat(c.streak_multiplier) || 1.0
-          }
+          points: Number(c.points) || 0,
+          badges: Array.isArray(c.badges) ? c.badges : [],
+          streak: c.streak || { current: 0, lastActive: 0 }
         }));
         setChildren(mappedChildren);
       }
@@ -172,17 +170,10 @@ const App: React.FC = () => {
       if (data.examHistory) setExamHistory(data.examHistory);
       if (data.events) setEvents(data.events);
       if (data.tasks) setTasks(data.tasks);
-      if (data.requests) setRequests(data.requests);
-      if (data.communications) setCommunications(data.communications);
-      if (data.quickNotes) setQuickNotes(data.quickNotes);
-      if (data.aiCorrections) setAiCorrections(data.aiCorrections);
-      if (data.academicGrades) setAcademicGrades(data.academicGrades);
       if (data.books) {
         setBooks(data.books);
         offlineStorageService.cacheBooks(data.books);
       }
-      if (data.dailyReports) setDailyReports(data.dailyReports);
-      if (data.reviewPlans) setReviewPlans(data.reviewPlans);
     } catch (e) { 
       console.error("Error cargando datos:", e);
       const cachedBooks = offlineStorageService.getCachedBooks();
@@ -192,21 +183,37 @@ const App: React.FC = () => {
     }
   };
 
+  // Al entrar en el panel de padres se recargan los datos (p. ej. exámenes que ha apuntado el niño)
   useEffect(() => {
-    const savedId = safeStorage.getItem('eduamigo_userId');
-    const savedPin = safeStorage.getItem('eduamigo_pin');
+    if (viewMode === 'parent' && userId && userRole !== 'demo') loadServerData(userId);
+  }, [viewMode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    // Las versiones anteriores guardaban el PIN en claro en el dispositivo: se borra.
+    safeStorage.removeItem('eduamigo_pin');
     const savedRole = safeStorage.getItem('eduamigo_role') as UserRole;
 
     if (savedRole === 'demo') {
       setUserRole('demo');
       setIsAuthenticated(true);
       loadDemoData();
-    } else if (savedId) {
-      setUserId(savedId);
-      setParentPin(savedPin || '1234');
-      setUserRole('parent');
-      setIsAuthenticated(true);
-      loadServerData(savedId);
+      setAuthChecked(true);
+    } else {
+      // La sesión la decide el servidor (cookie), no lo que haya guardado en el navegador.
+      authService.me().then((me) => {
+        if (me) {
+          setUserId(me.userId);
+          setUserRole('parent');
+          setIsAuthenticated(true);
+          setNeedsPinSetup(!!me.needsPinSetup);
+          safeStorage.setItem('eduamigo_userId', me.userId);
+          loadServerData(me.userId);
+        } else {
+          safeStorage.removeItem('eduamigo_userId');
+          safeStorage.removeItem('eduamigo_role');
+        }
+        setAuthChecked(true);
+      });
     }
     setRegion(safeStorage.getItem('eduamigo_region') as Region || 'Madrid');
     requestNotificationPermission().catch(() => {});
@@ -285,7 +292,7 @@ const App: React.FC = () => {
     const newChild: Child = {
       id: crypto.randomUUID(),
       name, grade, avatar, points: 0, badges: [],
-      streak: { current: 1, lastActive: Date.now(), multiplier: 1.0 }
+      streak: { current: 0, lastActive: 0 }
     };
     setChildren([...children, newChild]);
     if (userRole !== 'demo' && userId) {
@@ -319,12 +326,12 @@ const App: React.FC = () => {
     }
   };
 
-  const handleAuthenticated = (uid: string, email: string, pin: string) => {
+  const handleAuthenticated = (uid: string, email: string, mustSetPin: boolean) => {
     setUserId(uid);
-    setParentPin(pin);
     setUserRole('parent');
+    setNeedsPinSetup(mustSetPin);
+    setIsParentUnlocked(false);
     safeStorage.setItem('eduamigo_userId', uid);
-    safeStorage.setItem('eduamigo_pin', pin);
     safeStorage.setItem('eduamigo_role', 'parent');
     setIsAuthenticated(true);
     showToast("¡Bienvenido al Aula Virtual!", "success");
@@ -339,40 +346,34 @@ const App: React.FC = () => {
     showToast("Modo Invitado Activo.", "info");
   };
 
+  // Pide el PIN y, si es correcto, hace la acción indicada.
+  const requestParentPin = (action: 'parent' | 'logout', tab?: string) => {
+    if (userRole === 'demo') {
+      if (action === 'logout') { doLogout(); return; }
+      setIsParentUnlocked(true);
+      setParentInitialTab(tab);
+      setViewMode('parent');
+      return;
+    }
+    setAfterPin({ action, tab });
+    setShowAuthModal(true);
+  };
+
   const handleViewChange = (mode: ViewMode) => {
+    if (mode === 'exam') setActiveReview(null);
     if (mode === 'parent' && !isParentUnlocked && userRole !== 'demo') {
-      setShowAuthModal(true);
+      requestParentPin('parent');
       return;
     }
     if (mode === 'parent' && userRole === 'demo') {
       setIsParentUnlocked(true);
     }
-    if (['planner', 'exam', 'voice', 'ask', 'chat', 'reading', 'math', 'english', 'location', 'vision', 'scanner', 'calligraphy', 'daily-report', 'daily-review'].includes(mode) && !activeChildId) {
+    if (['planner', 'exam', 'ask', 'chat', 'reading', 'math', 'english', 'vision', 'calligraphy', 'daily-review', 'games'].includes(mode) && !activeChildId) {
       showToast("Selecciona un perfil", "info");
       setViewMode('ask');
       return;
     }
     setViewMode(mode);
-  };
-
-  const handleInquirySuccess = async (question: string, subject: Subject, answer: ExplanationResponse) => {
-    if (!activeChildId || !activeChild) return;
-    const newItem: HistoryItem = {
-      id: crypto.randomUUID(),
-      childId: activeChildId,
-      grade: activeChild.grade,
-      subject, region, question, answer,
-      timestamp: Date.now()
-    };
-    if (userRole !== 'demo' && userId) {
-      fetch(`api.php?action=save_history&userId=${userId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newItem)
-      });
-    }
-    setHistory(prev => [newItem, ...prev].slice(0, 100));
-    awardPoints(5);
   };
 
   const handleActivityLog = async (question: string, subject: Subject, answer: any) => {
@@ -402,280 +403,49 @@ const App: React.FC = () => {
     setHistory(prev => [newItem, ...prev].slice(0, 100));
   };
 
+  // Demo: puntos simulados en el navegador. Con cuenta: los puntos ya los ha dado el servidor; aquí solo se sincroniza.
   const awardPoints = async (points: number) => {
     if (!activeChildId) return;
-    const updatedChildren = children.map(c => {
-      if (c.id === activeChildId) {
-        const updated = { ...c, points: c.points + points, streak: { ...c.streak, lastActive: Date.now() } };
-        if (userRole !== 'demo' && userId) {
-          fetch(`api.php?action=update_child_points&userId=${userId}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(updated)
-          });
-        }
-        return updated;
-      }
-      return c;
-    });
-    setChildren(updatedChildren);
-    showToast(`¡Ganas ${points} puntos! ⭐`, "success");
+    if (userRole === 'demo') {
+      rewardsCtl.demoEarn(points);
+      if (points > 0) showToast(`¡Ganas ${points} puntos! ⭐`, "success");
+      return;
+    }
+    await syncChildPoints(activeChildId);
   };
 
   const awardPointsToChild = async (childId: string, points: number) => {
-    const updatedChildren = children.map(c => {
-      if (c.id === childId) {
-        const updated = { ...c, points: c.points + points, streak: { ...c.streak, lastActive: Date.now() } };
-        if (userRole !== 'demo' && userId) {
-          fetch(`api.php?action=update_child_points&userId=${userId}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(updated)
-          });
-        }
-        return updated;
-      }
-      return c;
-    });
-    setChildren(updatedChildren);
-    showToast(`¡Ganas ${points} puntos! ⭐`, "success");
-  };
-
-  const handleToggleTracking = (childId: string) => {
-    setLocationStates(prev => {
-      const existing = prev.find(s => s.childId === childId);
-      if (existing) {
-        return prev.map(s => s.childId === childId ? { ...s, isTracking: !s.isTracking } : s);
-      }
-      const newLoc: LocationState = {
-        childId,
-        isTracking: true,
-        currentCoord: null,
-        history: [],
-        deviationHistory: [],
-        homeCoord: null,
-        schoolCoord: null,
-        safeRadius: 200,
-        routePath: [],
-        destination: null,
-        groundingUrls: []
-      };
-      return [...prev, newLoc];
-    });
-  };
-
-  const handleSetLocationPoint = (childId: string, type: 'home' | 'school', coord: Coordinate, address?: string) => {
-    setLocationStates(prev => {
-      const existing = prev.find(s => s.childId === childId);
-      const update = type === 'home' 
-        ? { homeCoord: coord, homeAddress: address } 
-        : { schoolCoord: coord, schoolAddress: address };
-      if (existing) {
-        return prev.map(s => s.childId === childId ? { ...s, ...update } : s);
-      }
-      const newLoc: LocationState = {
-        childId,
-        isTracking: false,
-        currentCoord: null,
-        history: [],
-        deviationHistory: [],
-        homeCoord: null,
-        schoolCoord: null,
-        safeRadius: 200,
-        routePath: [],
-        destination: null,
-        groundingUrls: [],
-        ...update
-      };
-      return [...prev, newLoc];
-    });
-  };
-
-  const handleSearchAddress = async (childId: string, address: string, type: 'home' | 'school') => {
-    try {
-      const result = await searchAddressViaGemini(address);
-      if (result) {
-        handleSetLocationPoint(childId, type, result.coord, result.address);
-        return result.address;
-      }
-      return null;
-    } catch (error) {
-      console.error("Error searching address:", error);
-      return null;
+    if (userRole === 'demo') {
+      if (childId === activeChildId) rewardsCtl.demoEarn(points);
+      else patchChild(childId, { points: Math.max(0, (children.find(c => c.id === childId)?.points || 0) + points) });
+      if (points > 0) showToast(`¡Ganas ${points} puntos! ⭐`, "success");
+      return;
     }
+    await syncChildPoints(childId);
   };
 
-  const handleReverseGeocode = async (childId: string, coord: Coordinate, type: 'home' | 'school') => {
-    try {
-      const address = await reverseGeocodeViaGemini(coord);
-      handleSetLocationPoint(childId, type, coord, address);
-      return address;
-    } catch (error) {
-      console.error("Error reverse geocoding:", error);
-      return "Dirección desconocida";
-    }
-  };
-
-  const handleAddQuickNote = (note: Omit<QuickNote, 'id' | 'timestamp'>) => {
-    const newNote: QuickNote = { ...note, id: crypto.randomUUID(), timestamp: Date.now() };
-    setQuickNotes([newNote, ...quickNotes]);
-  };
-
-  const handleDeleteQuickNote = (id: string) => {
-    setQuickNotes(quickNotes.filter(n => n.id !== id));
-  };
-
-  const handleMarkCommRead = (id: string) => {
-    setCommunications(communications.map(c => c.id === id ? { ...c, isRead: true } : c));
-  };
-
-  const handleAddGrade = (grade: Omit<AcademicGrade, 'id' | 'timestamp'>) => {
-    const newGrade: AcademicGrade = {
-      ...grade,
-      id: crypto.randomUUID(),
-      timestamp: Date.now()
-    };
-    setAcademicGrades([newGrade, ...academicGrades]);
-    showToast("Nota registrada", "success");
-  };
-
-  const handleDeleteGrade = (id: string) => {
-    setAcademicGrades(academicGrades.filter(g => g.id !== id));
-  };
-
-  const handleSetReinforcementPlan = (childId: string, plan: StudyPlan) => {
-    setStudyPlans(prev => ({ ...prev, [childId]: plan }));
-  };
-
-  const handleAddAICorrection = (correction: Omit<AICorrection, 'id' | 'timestamp'>) => {
-    const newCorrection: AICorrection = {
-      ...correction,
-      id: crypto.randomUUID(),
-      timestamp: Date.now()
-    };
-    setAiCorrections([newCorrection, ...aiCorrections]);
-    showToast("Corrección guardada para la IA", "success");
-  };
-
-  const handleDeleteAICorrection = (id: string) => {
-    setAiCorrections(aiCorrections.filter(c => c.id !== id));
-  };
-
-  const handleToggleSession = (childId: string, sessionId: string) => {
-    setStudyPlans(prev => {
-      const plan = prev[childId];
-      if (!plan) return prev;
-      return {
-        ...prev,
-        [childId]: {
-          ...plan,
-          sessions: plan.sessions.map(s => 
-            s.id === sessionId ? { ...s, completed: !s.completed, completedAt: !s.completed ? Date.now() : undefined } : s
-          )
-        }
-      };
-    });
-  };
-
-  const handleLoadStudyPlan = async (childId: string) => {
-    const child = children.find(c => c.id === childId);
-    if (!child) return;
-    setLoadingPlan(true);
-    try {
-      const childEvents = events.filter(e => e.childId === childId);
-      const childExams = examHistory.filter(e => e.childId === childId);
-      const plan = await generateStudyPlan(child.grade, childEvents, childExams);
-      setStudyPlans(prev => ({ ...prev, [childId]: plan }));
-    } catch (e) {
-      console.error(e);
-      showToast("Error al generar el plan", "error");
-    } finally {
-      setLoadingPlan(false);
-    }
-  };
-
-  const handleAddDailyReport = async (report: Omit<DailyStudyReport, 'id' | 'timestamp' | 'status'>) => {
-    const newReport: DailyStudyReport = {
-      ...report,
-      id: crypto.randomUUID(),
-      timestamp: Date.now(),
-      status: 'pending'
-    };
-    setDailyReports([newReport, ...dailyReports]);
-    showToast("¡Buen trabajo! He avisado a tus padres de lo que has estudiado hoy.", "success");
-
-    if (userRole !== 'demo' && userId) {
-      try {
-        await fetch(`api.php?action=add_daily_report&userId=${userId}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(newReport)
-        });
-      } catch (e) { console.error(e); }
-    }
-  };
-
-  const handleCreateReviewPlan = async (plan: Omit<ReviewPlan, 'id' | 'status'>) => {
-    const newPlan: ReviewPlan = {
-      ...plan,
-      id: crypto.randomUUID(),
-      status: 'pending'
-    };
-    setReviewPlans([newPlan, ...reviewPlans]);
-    setDailyReports(dailyReports.map(r => r.id === plan.reportId ? { ...r, status: 'reviewed' } : r));
-    showToast("Plan de repaso creado y enviado.", "success");
-
-    if (userRole !== 'demo' && userId) {
-      try {
-        await fetch(`api.php?action=create_review_plan&userId=${userId}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(newPlan)
-        });
-      } catch (e) { console.error(e); }
-    }
-  };
-
-  const handleActivateReviewPlan = (id: string) => {
-    setReviewPlans(reviewPlans.map(p => p.id === id ? { ...p, status: 'active' } : p));
-  };
-
-  const handleCompleteReviewTask = async (planId: string, taskId: string, answer: string) => {
-    const plan = reviewPlans.find(p => p.id === planId);
-    if (!plan) return;
-    const task = plan.tasks.find(t => t.id === taskId);
-    if (!task) return;
-
-    const evaluation = await evaluateReviewTask(activeChild?.grade || '1º Primaria', task, answer);
-    
-    const updatedPlans = reviewPlans.map(p => {
-      if (p.id === planId) {
-        const updatedTasks = p.tasks.map(t => 
-          t.id === taskId ? { ...t, completed: true, answer, ...evaluation } : t
-        );
-        const allCompleted = updatedTasks.every(t => t.completed);
-        const newStatus = allCompleted ? 'completed' : p.status;
-        
-        if (userRole !== 'demo' && userId) {
-          fetch(`api.php?action=update_review_plan&id=${planId}&userId=${userId}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ tasks: updatedTasks, status: newStatus })
-          }).catch(console.error);
-        }
-
-        return { ...p, tasks: updatedTasks, status: newStatus };
-      }
-      return p;
-    });
-    setReviewPlans(updatedPlans);
-
-    awardPoints(10);
-  };
-
+  // Cerrar sesión: en una cuenta real lo hace un adulto (con PIN). Si no, el niño
+  // se quedaría fuera y haría falta la contraseña para volver a entrar.
   const handleLogout = () => {
+    if (userRole !== 'demo' && !isParentUnlocked) {
+      requestParentPin('logout');
+      return;
+    }
+    doLogout();
+  };
+
+  // Volver a "¿Quién va a estudiar hoy?" sin cerrar la sesión de la familia.
+  const handleSwitchProfile = () => {
+    setActiveChildId(null);
+    setActiveReview(null);
+    setViewMode('ask');
+  };
+
+  const doLogout = () => {
+    if (userRole !== 'demo') authService.logout();
     setIsAuthenticated(false);
-    safeStorage.clear();
+    // Solo se borran los datos de sesión: las fichas, cromos y preferencias del dispositivo se conservan.
+    ['eduamigo_userId', 'eduamigo_role', 'eduamigo_pin'].forEach(k => safeStorage.removeItem(k));
     setUserId(null);
     setUserRole(null);
     setChildren([]);
@@ -684,6 +454,118 @@ const App: React.FC = () => {
     showToast("Sesión cerrada.");
   };
 
+  // --- Zona de padres: se vuelve a bloquear al salir de ella ---
+  useEffect(() => {
+    if (viewMode !== 'parent' && isParentUnlocked && userRole !== 'demo') {
+      setIsParentUnlocked(false);
+      setParentInitialTab(undefined);
+      authService.lockParent();
+    }
+  }, [viewMode]);
+
+  // --- y tras 5 minutos sin tocar nada dentro del panel ---
+  useEffect(() => {
+    if (viewMode !== 'parent' || userRole === 'demo') return;
+    let timer: ReturnType<typeof setTimeout>;
+    const IDLE_MS = 5 * 60 * 1000;
+    const reset = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        setViewMode('ask');
+        showToast('Zona de padres bloqueada por inactividad', 'info');
+      }, IDLE_MS);
+    };
+    const evts = ['pointerdown', 'keydown', 'scroll', 'touchstart'];
+    evts.forEach(e => window.addEventListener(e, reset, { passive: true }));
+    reset();
+    return () => { clearTimeout(timer); evts.forEach(e => window.removeEventListener(e, reset)); };
+  }, [viewMode, userRole]);
+
+  // --- Respuestas del servidor que piden volver a entrar o volver a meter el PIN ---
+  const roleRef = useRef(userRole);
+  roleRef.current = userRole;
+  useEffect(() => {
+    const original = window.fetch;
+    window.fetch = async (...args: Parameters<typeof fetch>) => {
+      const res = await original(...args);
+      if (res.status === 401 || res.status === 403) {
+        const url = String(args[0] instanceof Request ? args[0].url : args[0]);
+        if (!url.includes('auth.php')) {
+          res.clone().json().then((body: any) => {
+            if (body?.code) window.dispatchEvent(new CustomEvent('eduamigo:auth', { detail: body.code }));
+          }).catch(() => {});
+        }
+      }
+      return res;
+    };
+    const onAuth = (e: Event) => {
+      if (roleRef.current === 'demo') return;
+      const code = (e as CustomEvent).detail;
+      if (code === 'AUTH_REQUIRED') {
+        doLogout();
+        showToast('Tu sesión ha caducado. Vuelve a iniciar sesión.', 'error');
+      } else if (code === 'PIN_REQUIRED') {
+        setIsParentUnlocked(false);
+        showToast('Por seguridad, vuelve a introducir el PIN y repite la acción.', 'error');
+        setAfterPin({ action: 'parent' });
+        setShowAuthModal(true);
+      }
+    };
+    window.addEventListener('eduamigo:auth', onAuth);
+    return () => { window.fetch = original; window.removeEventListener('eduamigo:auth', onAuth); };
+  }, []);
+
+  // --- Tutor: historial del niño activo y avisos sin leer para los padres ---
+  const refreshTutorConversations = () => {
+    if (userRole === 'demo' || !activeChildId) { setTutorConversations([]); return; }
+    tutorService.conversations(activeChildId).then(setTutorConversations);
+    // Una respuesta de riesgo crea un aviso: se refresca el globo del botón Padres
+    tutorService.unseenAlerts().then(setUnseenTutorAlerts);
+  };
+  useEffect(() => {
+    setOpenConversationId(null);
+    refreshTutorConversations();
+  }, [activeChildId, userRole]);
+  useEffect(() => {
+    if (userRole !== 'parent') return;
+    tutorService.unseenAlerts().then(setUnseenTutorAlerts);
+  }, [userRole, viewMode, activeChildId]);
+
+  // Ventanas de PIN: se muestran en cualquier pantalla (también en "¿Quién va a estudiar hoy?")
+  const pinModals = (
+    <>
+      {showAuthModal && (
+        <ParentAuthModal
+          reason={afterPin?.action === 'logout' ? 'Introduce el PIN para cerrar la sesión de la familia' : undefined}
+          onResult={(ok) => {
+            setShowAuthModal(false);
+            if (!ok) return;
+            const next = afterPin;
+            setAfterPin(null);
+            if (next?.action === 'logout') { doLogout(); return; }
+            setIsParentUnlocked(true);
+            setParentInitialTab(next?.tab);
+            setViewMode('parent');
+          }}
+          onCancel={() => { setShowAuthModal(false); setAfterPin(null); }}
+        />
+      )}
+      {needsPinSetup && userRole === 'parent' && (
+        <SetPinModal mandatory onDone={() => { setNeedsPinSetup(false); authService.lockParent(); showToast('PIN guardado', 'success'); }} />
+      )}
+      {showChangePin && (
+        <SetPinModal onDone={() => { setShowChangePin(false); showToast('PIN cambiado', 'success'); }} onCancel={() => setShowChangePin(false)} />
+      )}
+    </>
+  );
+
+  if (!authChecked) {
+    return (
+      <div className="min-h-screen bg-[#f0f9ff] flex items-center justify-center">
+        <p className="text-blue-400 font-black animate-pulse">Cargando EduAmigo…</p>
+      </div>
+    );
+  }
   if (!isAuthenticated) return <AuthScreen onAuthenticated={handleAuthenticated} onDemo={handleDemoMode} />;
   if (!userRole) return <Login onLogin={setUserRole} onLogout={handleLogout} />;
   
@@ -695,7 +577,8 @@ const App: React.FC = () => {
             {toast.msg}
           </div>
         )}
-        <ChildSelector children={children} onSelect={(c) => { setActiveChildId(c.id); showToast(`¡Hola ${c.name}!`, "success"); }} onAddChild={() => setViewMode('parent')} />
+        {pinModals}
+        <ChildSelector children={children} onSelect={(c) => { setActiveChildId(c.id); showToast(`¡Hola ${c.name}!`, "success"); }} onAddChild={() => requestParentPin('parent', 'children')} />
         <button onClick={handleLogout} className="mt-8 text-blue-400 font-bold hover:underline">
           {userRole === 'demo' ? 'Volver al Inicio (Salir de Demo)' : 'Cerrar Sesión'}
         </button>
@@ -713,32 +596,16 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {showDiagnostics && (
-        <div className="fixed bottom-24 right-6 z-[300] bg-slate-900 text-white p-4 rounded-2xl shadow-2xl border border-slate-700 text-[10px] font-mono w-64">
-          <div className="flex justify-between items-center mb-2">
-            <span className="font-bold text-blue-400">DIAGNÓSTICO IA</span>
-            <button onClick={() => setShowDiagnostics(false)}>✕</button>
-          </div>
-          <div className="space-y-1">
-            <p>API KEY: <span className="text-yellow-400">{diagStatus.key}</span></p>
-            <p>STATUS: <span className={diagStatus.status.includes('✅') ? 'text-green-400' : 'text-red-400'}>{diagStatus.status}</span></p>
-          </div>
-          <button 
-            onClick={runDiagnostics}
-            className="mt-3 w-full py-1 bg-blue-600 rounded-lg font-bold hover:bg-blue-500 transition-colors"
-          >
-            RE-TEST
-          </button>
-        </div>
-      )}
-
-      {showAuthModal && <ParentAuthModal correctPin={parentPin} onResult={(s) => { setIsParentUnlocked(s); if(s) setViewMode('parent'); setShowAuthModal(false); }} onCancel={() => setShowAuthModal(false)} />}
-      {showSOSModal && <SOSModal onSelect={() => { setViewMode('ask'); setShowSOSModal(false); }} onClose={() => setShowSOSModal(false)} />}
+      {pinModals}
+      {viewMode !== 'parent' && activeChild && <CelebrationModal ctl={rewardsCtl} />}
       
-      <aside className="hidden md:flex w-80 bg-white border-r border-blue-100 p-6 flex-col h-screen sticky top-0 overflow-y-auto no-scrollbar">
-        {activeChild && <GamificationCenter child={activeChild} />}
+      <aside className={`${viewMode === 'parent' ? 'hidden' : 'hidden md:flex'} w-80 bg-white border-r border-blue-100 p-6 flex-col h-screen sticky top-0 overflow-y-auto no-scrollbar`}>
+        {activeChild && <GamificationCenter ctl={rewardsCtl} onOpenShop={() => handleViewChange('shop')} />}
         <div className="mt-8">
-          <HistorySidebar history={history.filter(h => h.childId === activeChildId)} onSelect={() => setViewMode('ask')} />
+          <HistorySidebar
+            items={tutorConversations}
+            onSelect={(id) => { setOpenConversationId(id); setViewMode('ask'); }}
+          />
         </div>
       </aside>
 
@@ -749,12 +616,14 @@ const App: React.FC = () => {
           userRole={userRole} 
           activeChild={activeChild} 
           onLogout={handleLogout}
+          onSwitchProfile={children.length > 1 || userRole !== 'demo' ? handleSwitchProfile : undefined}
+          parentBadge={unseenTutorAlerts}
         />
         
         <div className="mt-8">
-          {userRole === 'student' && activeChildId && (
+          {viewMode === 'ask' && activeChildId && (
             <div className="mb-8">
-              <SRSReviewModule childId={activeChildId} onStartReview={handleStartSRSReview} />
+              <TodayReviewBanner childId={activeChildId} isDemo={userRole === 'demo'} refreshKey={reviewRefresh} onOpen={() => handleViewChange('daily-review')} />
             </div>
           )}
           {viewMode === 'ask' && activeChild && (
@@ -762,157 +631,120 @@ const App: React.FC = () => {
               <StudyModuleContainer 
                 userId={userId || 'demo'} 
                 childId={activeChildId || 'demo-hugo'} 
-                userRole={userRole} 
+                userRole="student"
                 grade={activeChild?.grade || '4º Primaria'} 
                 onViewChange={handleViewChange}
               />
-              <StudentInquiry childName={activeChild.name} grade={activeChild.grade} region={region} onSuccess={handleInquirySuccess} onSOS={() => setShowSOSModal(true)} />
+              <TutorChat
+                child={activeChild}
+                region={region}
+                isDemo={userRole === 'demo'}
+                openConversationId={openConversationId}
+                onConversationsChanged={refreshTutorConversations}
+                onActivity={() => awardPoints(5)}
+              />
             </div>
           )}
-          {viewMode === 'chat' && activeChild && <ChatInterface grade={activeChild.grade} subject="Matemáticas" region={region} onActivityLog={handleActivityLog} />}
-          {viewMode === 'library' && (
-            <div className="space-y-8">
-              {activeChildId && (
-                <StudyModuleContainer 
-                  userId={userId || safeStorage.getItem('eduamigo_user_id') || 'demo'}
-                  childId={activeChildId || 'demo'}
-                  userRole={userRole} 
-                  grade={activeChild?.grade || '1º Primaria'}
-                  onViewChange={handleViewChange}
-                />
-              )}
-              <LibraryBrowser region={region} grade={activeChild?.grade || '1º Primaria'} setGrade={() => {}} onViewChange={handleViewChange} />
-            </div>
+          {(viewMode === 'chat' || viewMode === 'vision') && activeChild && (
+            <TutorChat
+              child={activeChild}
+              region={region}
+              isDemo={userRole === 'demo'}
+              openConversationId={openConversationId}
+              onConversationsChanged={refreshTutorConversations}
+              onActivity={() => awardPoints(5)}
+              initialImage={tutorImage}
+              onInitialImageUsed={() => setTutorImage(null)}
+            />
+          )}
+          {viewMode === 'library' && activeChild && (
+            <LibraryBrowser childId={activeChild.id} grade={activeChild.grade} region={region} isDemo={userRole === 'demo'} />
           )}
           {viewMode === 'planner' && activeChild && (
-            <StudyPlanner 
-              child={activeChild} 
-              events={events.filter(e => e.childId === activeChildId)} 
-              examResults={examHistory.filter(e => e.childId === activeChildId)} 
-              plan={studyPlans[activeChild.id] || null}
-              loading={loadingPlan}
-              onLoadPlan={() => handleLoadStudyPlan(activeChild.id)}
-              onToggleSession={(sid) => handleToggleSession(activeChild.id, sid)}
-            />
+            <MyWeek child={activeChild} isDemo={userRole === 'demo'} onOpen={(v) => handleViewChange(v)} />
           )}
           {viewMode === 'exam' && activeChild && (
-            <ExamMode 
-              grade={activeChild.grade} 
-              subject="Matemáticas" 
-              region={region} 
-              childId={activeChild.id} 
-              onSaveResult={(r) => {
-                setExamHistory([r, ...examHistory]); 
-                awardPoints(r.pointsEarned);
-              }} 
-              initialTopic={activeSRSReview?.topic}
-              initialSubject={activeSRSReview?.subject}
-              srsReviewId={activeSRSReview?.id}
-              onCompleteSRS={handleCompleteSRSReview}
+            <ExamMode
+              key={activeReview?.id || 'libre'}
+              child={activeChild}
+              region={region}
+              isDemo={userRole === 'demo'}
+              reviewItem={activeReview}
+              onPoints={(np, earned) => applyServerPoints(activeChild.id, np, earned)}
+              onBack={() => { setActiveReview(null); setViewMode('daily-review'); }}
             />
           )}
-          {viewMode === 'voice' && activeChild && <OralPractice grade={activeChild.grade} subject="Inglés" onActivityLog={handleActivityLog} />}
-          {viewMode === 'calligraphy' && activeChild && <CalligraphyModule userId={userId || 'demo'} childId={activeChild.id} childName={activeChild.name} grade={activeChild.grade} onAwardPoints={awardPoints} onActivityLog={handleActivityLog} />}
-          {viewMode === 'reading' && activeChild && <ReadingModule userId={userId || 'demo'} childId={activeChild.id} childName={activeChild.name} grade={activeChild.grade} onAwardPoints={awardPoints} onActivityLog={handleActivityLog} />}
+          {viewMode === 'calligraphy' && activeChild && <CalligraphyModule childId={activeChild.id} childName={activeChild.name} grade={activeChild.grade} isDemo={userRole === 'demo'} onPoints={(np, earned) => applyServerPoints(activeChild.id, np, earned)} onDemoPoints={awardPoints} />}
+          {viewMode === 'reading' && activeChild && <ReadingModule childId={activeChild.id} childName={activeChild.name} grade={activeChild.grade} isDemo={userRole === 'demo'} onPoints={(np, earned) => applyServerPoints(activeChild.id, np, earned)} onDemoPoints={awardPoints} onActivityLog={handleActivityLog} />}
           {viewMode === 'math' && activeChild && (
-            <MathModule 
-              userId={userId || 'demo'} 
-              childId={activeChild.id} 
-              childName={activeChild.name} 
-              grade={activeChild.grade} 
-              onAwardPoints={awardPoints} 
+            <MathModule
+              childId={activeChild.id}
+              childName={activeChild.name}
+              grade={activeChild.grade}
+              isDemo={userRole === 'demo'}
+              onPoints={(np, earned) => applyServerPoints(activeChild.id, np, earned)}
+              onDemoPoints={awardPoints}
+              onOpenWorksheets={(intent) => { setWorksheetIntent(intent); setViewMode('worksheets'); }}
               onActivityLog={handleActivityLog}
-              books={books}
-              childrenList={children}
             />
           )}
-          {viewMode === 'static-library' && activeChild && <StaticContentLibrary grade={activeChild.grade} />}
           {viewMode === 'pomodoro' && activeChild && (
             <PomodoroTimer 
-              onAwardPoints={awardPoints} 
+              childId={activeChild.id}
+              grade={activeChild.grade}
+              isDemo={userRole === 'demo'}
+              onPoints={(np, earned) => applyServerPoints(activeChild.id, np, earned)}
+              onDemoPoints={awardPoints}
               onClose={() => setViewMode('ask')} 
             />
           )}
-          {viewMode === 'english' && activeChild && <EnglishModule child={activeChild} userId={userId || 'demo'} onActivityLog={handleActivityLog} />}
-          {viewMode === 'location' && activeChild && (
-            <LocationHub 
-              viewMode={userRole === 'parent' ? 'parent' : 'student'} 
-              child={activeChild} 
-              locationStates={locationStates} 
-              onToggleTracking={handleToggleTracking} 
-              onSetPoint={handleSetLocationPoint} 
-              onSearchAddress={handleSearchAddress} 
-              onReverseGeocode={handleReverseGeocode} 
-            />
-          )}
-          {viewMode === 'vision' && activeChild && (
-            <VisionTutor 
-              grade={activeChild.grade} 
-              onActivityLog={handleActivityLog} 
-              onNavigateToWorksheets={() => setViewMode('worksheets')}
-            />
-          )}
-          {viewMode === 'scanner' && activeChild && <SchoolDocumentScanner childId={activeChild.id} onEventAdded={handleAddEvent} />}
-          {viewMode === 'daily-report' && activeChild && (
-            <DailyStudyRecorder 
-              child={activeChild} 
-              books={books} 
-              onAddReport={handleAddDailyReport} 
-            />
-          )}
+          {viewMode === 'games' && activeChild && <GamesZone child={activeChild} isDemo={userRole === 'demo'} onPoints={(np, earned) => applyServerPoints(activeChild.id, np, earned)} onGoStudy={() => handleViewChange('daily-review')} />}
+          {viewMode === 'english' && activeChild && <EnglishModule child={activeChild} isDemo={userRole === 'demo'} onPoints={(np, earned) => applyServerPoints(activeChild.id, np, earned)} onDemoPoints={awardPoints} />}
           {viewMode === 'daily-review' && activeChild && (
-            <div className="space-y-8">
-              {reviewPlans.filter(p => p.childId === activeChildId && (p.status === 'active' || p.status === 'completed')).map(plan => (
-                <ReviewTaskModule 
-                  key={plan.id} 
-                  child={activeChild} 
-                  plan={plan} 
-                  onCompleteTask={handleCompleteReviewTask} 
-                />
-              ))}
-              {reviewPlans.filter(p => p.childId === activeChildId && (p.status === 'active' || p.status === 'completed')).length === 0 && (
-                <div className="bg-white p-12 rounded-[2.5rem] border-2 border-dashed border-blue-100 text-center opacity-60">
-                  <div className="text-4xl mb-4">🧘</div>
-                  <p className="text-blue-900 font-black">No tienes planes de repaso activos.</p>
-                  <p className="text-blue-400 text-xs font-bold mt-2">¡Disfruta de tu tiempo libre!</p>
-                </div>
-              )}
-            </div>
+            <RepasarView
+              key={`${activeChild.id}-${reviewRefresh}`}
+              child={activeChild}
+              isDemo={userRole === 'demo'}
+              onStartReview={startReview}
+              onFreeTest={() => { setActiveReview(null); setViewMode('exam'); }}
+            />
           )}
           {viewMode === 'shop' && activeChild && (
-            <RewardsShop 
-              child={activeChild} 
-              rewards={rewards} 
-              onDeductPoints={(cost) => awardPoints(-cost)}
-            />
+            <>
+              {/* En el móvil no hay barra lateral: la racha y las medallas se ven aquí */}
+              <div className="md:hidden mb-6"><GamificationCenter ctl={rewardsCtl} /></div>
+              <RewardsShop ctl={rewardsCtl} isDemo={userRole === 'demo'} />
+            </>
           )}
           {viewMode === 'worksheets' && (
             <div className="animate-in fade-in duration-300">
               <WorksheetHub 
                 childrenList={children}
                 books={books}
-                userRole={userRole}
+                userRole="student"
                 activeChildId={activeChildId}
-                isParentUnlocked={isParentUnlocked}
-                onRequireParentPin={() => setShowAuthModal(true)}
+                isParentUnlocked={false}
+                onRequireParentPin={() => requestParentPin('parent', 'worksheets')}
                 onAwardPoints={(cId, pts) => awardPointsToChild(cId, pts)}
+                isDemo={userRole === 'demo'}
+                onAskTutorWithPhoto={(img) => { setTutorImage(img); setViewMode('chat'); }}
+                intent={worksheetIntent}
+                onIntentConsumed={() => setWorksheetIntent(null)}
               />
             </div>
           )}
           {viewMode === 'parent' && (
             <ParentDashboard 
+              initialTab={parentInitialTab}
+              isDemo={userRole === 'demo'}
+              tutorAlerts={unseenTutorAlerts}
+              onTutorAlertsSeen={() => tutorService.unseenAlerts().then(setUnseenTutorAlerts)}
+              onChangePin={userRole === 'demo' ? undefined : () => setShowChangePin(true)}
               userId={userId || 'demo'}
-              history={history} 
-              examHistory={examHistory} 
               children={children} 
               rewards={rewards} 
               events={events} 
               tasks={tasks} 
-              requests={requests}
-              communications={communications} 
-              quickNotes={quickNotes} 
-              locationStates={locationStates}
-              onSelectItem={() => {}} 
               onAddChild={handleAddChild} 
               onUpdateRewards={handleUpdateRewards} 
               onAddEvent={handleAddEvent} 
@@ -920,34 +752,12 @@ const App: React.FC = () => {
               onAddTask={handleAddTask} 
               onToggleTask={handleToggleTask} 
               onDeleteTask={handleDeleteTask} 
-              onApproveRequest={(id, date) => {
-                setRequests(requests.map(r => r.id === id ? { ...r, status: 'approved' } : r));
-                handleAddTask({ childId: requests.find(r => r.id === id)?.childId || '', title: `Petición: ${requests.find(r => r.id === id)?.title}`, dueDate: date, completed: false, priority: 'medium' });
-              }} 
-              onRejectRequest={(id) => setRequests(requests.map(r => r.id === id ? { ...r, status: 'rejected' } : r))} 
-              onUpdateTask={() => {}} 
-              onAddQuickNote={handleAddQuickNote} 
-              onDeleteQuickNote={handleDeleteQuickNote} 
-              onSyncSchoolComms={() => showToast("Sincronizando con el colegio...", "info")} 
-              onMarkCommRead={handleMarkCommRead} 
-              onToggleTracking={handleToggleTracking} 
-              onSetLocationPoint={handleSetLocationPoint} 
-              onSearchAddress={handleSearchAddress} 
-              onReverseGeocode={handleReverseGeocode}
-              academicGrades={academicGrades}
-              onAddGrade={handleAddGrade}
-              onDeleteGrade={handleDeleteGrade}
-              onSetReinforcementPlan={handleSetReinforcementPlan}
               onUpdateChild={handleUpdateChild}
               onDeleteChild={handleDeleteChild}
-              aiCorrections={aiCorrections}
-              onAddAICorrection={handleAddAICorrection}
-              onDeleteAICorrection={handleDeleteAICorrection}
-              dailyReports={dailyReports}
-              reviewPlans={reviewPlans}
               books={books}
-              onCreateReviewPlan={handleCreateReviewPlan}
               onAwardPointsToChild={awardPointsToChild}
+              onChildPointsChanged={(cid, np) => { patchChild(cid, { points: np }); if (cid === activeChildId) rewardsCtl.refresh(); }}
+              onExit={() => (activeChildId ? handleViewChange('ask') : handleSwitchProfile())}
             />
           )}
         </div>
@@ -969,23 +779,19 @@ const App: React.FC = () => {
            )}
         </div>
 
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-white/95 backdrop-blur-md px-6 py-3 rounded-full shadow-2xl border border-blue-50 flex gap-4 z-40">
-           <button onClick={() => setShowDiagnostics(true)} title="Diagnóstico" className="p-2 rounded-xl text-slate-400 hover:text-blue-600">🛠️</button>
-           <button onClick={() => handleViewChange('ask')} title="Estudiar" className={`p-2 rounded-xl transition-all ${viewMode === 'ask' ? 'bg-blue-600 text-white shadow-lg' : 'text-blue-400'}`}>💡</button>
-           <button onClick={() => handleViewChange('chat')} title="Chat IA" className={`p-2 rounded-xl transition-all ${viewMode === 'chat' ? 'bg-blue-600 text-white shadow-lg' : 'text-blue-400'}`}>💬</button>
-           <button onClick={() => handleViewChange('library')} title="Estudio Reglado" className={`p-2 rounded-xl transition-all ${viewMode === 'library' ? 'bg-blue-600 text-white shadow-lg' : 'text-blue-400'}`}>📚</button>
-           <button onClick={() => handleViewChange('calligraphy')} title="Caligrafía" className={`p-2 rounded-xl transition-all ${viewMode === 'calligraphy' ? 'bg-blue-600 text-white shadow-lg' : 'text-blue-400'}`}>✍️</button>
+        {viewMode !== 'parent' && <div className="fixed bottom-6 left-1/2 -translate-x-1/2 max-w-[calc(100vw-1.5rem)] overflow-x-auto no-scrollbar bg-white/95 backdrop-blur-md px-6 py-3 rounded-full shadow-2xl border border-blue-50 flex gap-4 z-40">
+           <button onClick={() => handleViewChange('ask')} title="Pregúntame" className={`p-2 rounded-xl transition-all ${viewMode === 'ask' ? 'bg-blue-600 text-white shadow-lg' : 'text-blue-400'}`}>💡</button>
+           <button onClick={() => handleViewChange('planner')} title="Mi semana" className={`p-2 rounded-xl transition-all ${viewMode === 'planner' ? 'bg-blue-600 text-white shadow-lg' : 'text-blue-400'}`}>📅</button>
+           <button onClick={() => handleViewChange('daily-review')} title="Repasar" className={`p-2 rounded-xl transition-all ${viewMode === 'daily-review' ? 'bg-blue-600 text-white shadow-lg' : 'text-blue-400'}`}>🧠</button>
+           <button onClick={() => handleViewChange('worksheets')} title="Deberes y fichas" className={`p-2 rounded-xl transition-all ${viewMode === 'worksheets' ? 'bg-blue-600 text-white shadow-lg' : 'text-blue-400'}`}>🎒</button>
            <button onClick={() => handleViewChange('reading')} title="Lectura" className={`p-2 rounded-xl transition-all ${viewMode === 'reading' ? 'bg-blue-600 text-white shadow-lg' : 'text-blue-400'}`}>📖</button>
            <button onClick={() => handleViewChange('math')} title="Matemáticas" className={`p-2 rounded-xl transition-all ${viewMode === 'math' ? 'bg-blue-600 text-white shadow-lg' : 'text-blue-400'}`}>🔢</button>
-           <button onClick={() => handleViewChange('english')} title="English Academy" className={`p-2 rounded-xl transition-all ${viewMode === 'english' ? 'bg-blue-600 text-white shadow-lg' : 'text-blue-400'}`}>🇬🇧</button>
-           <button onClick={() => handleViewChange('vision')} title="Vision Tutor" className={`p-2 rounded-xl transition-all ${viewMode === 'vision' ? 'bg-blue-600 text-white shadow-lg' : 'text-blue-400'}`}>📷</button>
-           <button onClick={() => handleViewChange('scanner')} title="Escáner Escolar" className={`p-2 rounded-xl transition-all ${viewMode === 'scanner' ? 'bg-blue-600 text-white shadow-lg' : 'text-blue-400'}`}>📄</button>
-           <button onClick={() => handleViewChange('location')} title="Ubicación" className={`p-2 rounded-xl transition-all ${viewMode === 'location' ? 'bg-blue-600 text-white shadow-lg' : 'text-blue-400'}`}>📍</button>
-           <button onClick={() => handleViewChange('voice')} title="Práctica Oral" className={`p-2 rounded-xl transition-all ${viewMode === 'voice' ? 'bg-blue-600 text-white shadow-lg' : 'text-blue-400'}`}>🎙️</button>
-           <button onClick={() => handleViewChange('daily-report')} title="Informar Estudio" className={`p-2 rounded-xl transition-all ${viewMode === 'daily-report' ? 'bg-blue-600 text-white shadow-lg' : 'text-blue-400'}`}>📝</button>
-           <button onClick={() => handleViewChange('daily-review')} title="Repaso Diario" className={`p-2 rounded-xl transition-all ${viewMode === 'daily-review' ? 'bg-blue-600 text-white shadow-lg' : 'text-blue-400'}`}>🧠</button>
+           <button onClick={() => handleViewChange('english')} title="Inglés" className={`p-2 rounded-xl transition-all ${viewMode === 'english' ? 'bg-blue-600 text-white shadow-lg' : 'text-blue-400'}`}>🇬🇧</button>
+           <button onClick={() => handleViewChange('calligraphy')} title="Caligrafía" className={`p-2 rounded-xl transition-all ${viewMode === 'calligraphy' ? 'bg-blue-600 text-white shadow-lg' : 'text-blue-400'}`}>✍️</button>
+           <button onClick={() => handleViewChange('library')} title="Biblioteca" className={`p-2 rounded-xl transition-all ${viewMode === 'library' ? 'bg-blue-600 text-white shadow-lg' : 'text-blue-400'}`}>📚</button>
+           <button onClick={() => handleViewChange('games')} title="Juegos" data-testid="bottom-games" className={`p-2 rounded-xl transition-all ${viewMode === 'games' ? 'bg-blue-600 text-white shadow-lg' : 'text-blue-400'}`}>🎮</button>
            <button onClick={() => handleViewChange('shop')} title="Recompensas" className={`p-2 rounded-xl transition-all ${viewMode === 'shop' ? 'bg-blue-600 text-white shadow-lg' : 'text-blue-400'}`}>🎁</button>
-        </div>
+        </div>}
       </main>
     </div>
   );

@@ -14,6 +14,8 @@ export interface WorksheetExercise {
   gridRows?: number; // Filas recomendadas de cuadrícula (para mates)
   linesCount?: number; // Número de renglones de pauta escolar para escribir a lápiz
   exerciseType?: 'math_operation' | 'ruled_text' | 'fill_blank' | 'multiple_choice';
+  /** Tipo de operación de mates generada localmente (division, suma, resta…) */
+  operation?: string;
 }
 
 export interface WorksheetCorrectionExercise {

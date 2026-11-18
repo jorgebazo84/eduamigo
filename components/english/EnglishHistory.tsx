@@ -1,85 +1,64 @@
-import React, { useState, useEffect } from 'react';
-import { EnglishProgress } from '../../types/english';
+import React, { useEffect, useState } from 'react';
+import { englishService, EnglishParentStats } from '../../services/englishService';
+import type { EnglishLevel } from '../../shared/englishBank';
 
-interface EnglishHistoryProps {
-  userId: string;
-  childId: string;
-}
+/** Padres: nivel de inglés, lecciones hechas con sus redacciones corregidas y cambio de nivel a mano. */
+const EnglishHistory: React.FC<{ childId: string; isDemo?: boolean }> = ({ childId, isDemo }) => {
+  const [data, setData] = useState<EnglishParentStats | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const load = () => {
+    if (isDemo) { setError('Con una cuenta verás aquí su nivel de inglés, sus lecciones y sus redacciones corregidas.'); return; }
+    englishService.parentStats(childId).then(setData).catch((e) => setError(e.message));
+  };
+  useEffect(load, [childId, isDemo]); // eslint-disable-line react-hooks/exhaustive-deps
 
-const EnglishHistory: React.FC<EnglishHistoryProps> = ({ userId, childId }) => {
-  const [progress, setProgress] = useState<EnglishProgress | null>(null);
-  const [loading, setLoading] = useState(true);
+  if (error) return <p className="text-sm text-slate-600 bg-white rounded-2xl p-5">{error}</p>;
+  if (!data) return <div className="h-40 bg-blue-50 rounded-[2rem] animate-pulse" />;
+  const avg = data.lessons.length ? Math.round(data.lessons.reduce((s, l) => s + l.mcCorrect / Math.max(1, l.mcTotal), 0) / data.lessons.length * 100) : null;
 
-  useEffect(() => {
-    fetchProgress();
-  }, [childId]);
-
-  const fetchProgress = async () => {
-    setLoading(true);
-    try {
-      const response = await fetch(`api_english.php?action=get_progress`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ childId })
-      });
-      const data = await response.json();
-      if (data.status === 'success') {
-        setProgress(data.data);
-      }
-    } catch (err) {
-      console.error("Error fetching English progress", err);
-    } finally {
-      setLoading(false);
-    }
+  const change = async (level: EnglishLevel) => {
+    try { await englishService.setLevel(childId, level); setMsg('Nivel cambiado.'); load(); setTimeout(() => setMsg(null), 3000); }
+    catch (e: any) { setMsg(e.message); }
   };
 
-  if (loading) return <div className="p-8 text-center text-slate-500">Cargando progreso de inglés...</div>;
-  if (!progress) return <div className="p-8 text-center text-slate-500">No hay datos de inglés para este estudiante.</div>;
-
   return (
-    <div className="bg-white p-8 rounded-[2rem] border border-blue-50 shadow-sm space-y-6">
-      <div className="flex justify-between items-center">
-        <h3 className="text-xl font-black text-blue-900 flex items-center gap-2">
-          🇬🇧 Progreso English Academy
-        </h3>
-        <span className="bg-blue-100 text-blue-700 px-4 py-1 rounded-full text-xs font-bold">
-          Método Cambridge
-        </span>
+    <div className="space-y-4" data-testid="english-stats">
+      <div className="bg-white rounded-[2rem] p-6 border border-blue-50 flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <p className="text-[10px] font-black uppercase text-slate-400">Nivel actual</p>
+          <p className="text-2xl font-black text-blue-900">{data.levelLabel}</p>
+          <p className="text-xs text-slate-500">{data.setBy === 'parent' ? 'Elegido por vosotros' : data.setBy === 'progress' ? 'Ha subido por sus resultados' : data.placed ? 'Según la prueba de nivel' : 'Según su curso (aún no ha hecho la prueba)'}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <label htmlFor="eng-level" className="text-xs font-bold text-slate-500">Cambiar nivel</label>
+          <select id="eng-level" value={data.level} onChange={(e) => change(e.target.value as EnglishLevel)} className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm">
+            {data.levels.map((l) => <option key={l.id} value={l.id}>{l.label}</option>)}
+          </select>
+        </div>
+        {msg && <p className="w-full text-xs font-bold text-emerald-700">{msg}</p>}
       </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-blue-50 p-6 rounded-2xl border border-blue-100">
-          <p className="text-blue-400 text-[10px] font-black uppercase mb-1">Nivel Actual</p>
-          <p className="text-2xl font-black text-blue-900">{progress.currentLevel}</p>
-        </div>
-        <div className="bg-amber-50 p-6 rounded-2xl border border-amber-100">
-          <p className="text-amber-400 text-[10px] font-black uppercase mb-1">Puntos Acumulados</p>
-          <p className="text-2xl font-black text-amber-900">⭐ {progress.points}</p>
-        </div>
-        <div className="bg-orange-50 p-6 rounded-2xl border border-orange-100">
-          <p className="text-orange-400 text-[10px] font-black uppercase mb-1">Racha Actual</p>
-          <p className="text-2xl font-black text-orange-900">🔥 {progress.streak} días</p>
-        </div>
-      </div>
-
-      <div className="space-y-4">
-        <h4 className="font-bold text-slate-700">Lecciones Completadas</h4>
-        {progress.completedLessons.length === 0 ? (
-          <p className="text-sm text-slate-500 italic">Aún no ha completado ninguna lección.</p>
-        ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-            {progress.completedLessons.map((lessonId, idx) => (
-              <div key={idx} className="bg-slate-50 p-3 rounded-xl border border-slate-100 text-center">
-                <p className="text-xs font-bold text-slate-600">Lección {lessonId}</p>
-                <p className="text-[10px] text-emerald-600 font-bold">Completada ✅</p>
-              </div>
+      <div className="bg-white rounded-[2rem] p-6 border border-blue-50">
+        <h4 className="font-black text-slate-800 mb-1">Lecciones ({data.lessons.length}){avg !== null ? ` · ${avg} % de aciertos de media` : ''}</h4>
+        {data.lessons.length === 0 ? <p className="text-sm text-slate-500">Todavía no ha hecho ninguna lección.</p> : (
+          <div className="divide-y divide-slate-100">
+            {data.lessons.map((l) => (
+              <details key={l.id} className="py-2">
+                <summary className="cursor-pointer text-sm flex justify-between gap-3">
+                  <span className="font-bold text-slate-700">{l.title} <span className="text-xs text-slate-400">({l.level})</span></span>
+                  <span className="text-xs text-slate-500">{l.mcCorrect}/{l.mcTotal}{l.writing?.score !== undefined ? ` · redacción ${l.writing.score}` : ''} · {new Date(l.at).toLocaleDateString('es-ES')}</span>
+                </summary>
+                {l.writingText && (
+                  <div className="mt-2 bg-slate-50 rounded-xl p-3 text-sm space-y-2">
+                    <p className="italic text-slate-700">«{l.writingText}»</p>
+                    {l.writing?.feedback && <p className="text-slate-600">{l.writing.feedback}</p>}
+                    {(l.writing?.corrections || []).map((c, i) => <p key={i} className="text-xs"><span className="line-through text-red-600">{c.original}</span> → <b className="text-emerald-700">{c.correction}</b> · {c.explanation}</p>)}
+                  </div>
+                )}
+              </details>
             ))}
           </div>
         )}
-      </div>
-
-      <div className="pt-4 border-t border-slate-100">
-        <p className="text-[10px] text-slate-400 uppercase font-bold">Última actividad: {new Date(progress.lastActive).toLocaleDateString()}</p>
       </div>
     </div>
   );

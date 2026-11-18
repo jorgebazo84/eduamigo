@@ -1,790 +1,363 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { mathService } from '../services/mathService';
-import { MathAnalysis } from '../types/math';
+import React, { useEffect, useRef, useState } from 'react';
 import { Subject } from '../types';
-import { srsService } from '../services/srsService';
-import { WorksheetHub } from './worksheets/WorksheetHub';
-import { Book } from '../types/study';
-import { Child } from '../types';
+import { mathService, MathConfig, ChallengeResult } from '../services/mathService';
+import { ChallengeMode, AnswerStyle, gradeLevel, defaultAnswerStyle, generateProblem, makeOptions } from '../services/mathChallenge';
+import { MathProblem, problemText, evaluate, parseAnswer, isCorrect } from '../shared/mathOps';
+
+export interface WorksheetIntent { openPhoto?: boolean; homeworkImage?: string; subject?: string }
 
 interface MathModuleProps {
-  userId: string;
   childId: string;
   childName: string;
   grade: string;
-  onAwardPoints: (points: number) => void;
+  isDemo: boolean;
+  /** El servidor ya ha sumado los puntos del reto: aquí solo se actualiza la pantalla */
+  onPoints: (newPoints: number, earned: number) => void;
+  /** Modo demostración: puntos solo en pantalla */
+  onDemoPoints?: (points: number) => void;
+  /** Ir a "Deberes & Fichas" (hacer una foto, corregir la pizarra o ver las fichas de mates) */
+  onOpenWorksheets: (intent: WorksheetIntent) => void;
   onActivityLog?: (question: string, subject: Subject, answer: any) => void;
-  books?: Book[];
-  childrenList?: Child[];
 }
 
-interface SpeedProblem {
-  num1: number;
-  num2: number;
-  operator: '+' | '-' | '×' | '÷';
-  answer: number;
-  options: number[];
-}
+const DURATION = 45;
+const MODES: { id: ChallengeMode; label: string }[] = [
+  { id: 'mixed', label: '🎲 Todo mezclado' },
+  { id: 'add_sub', label: '➕ Sumas y restas' },
+  { id: 'multi', label: '✖️ Multiplicar' },
+  { id: 'div', label: '➗ Dividir' },
+  { id: 'tables', label: '🔢 Tablas' },
+  { id: 'mistakes', label: '🎯 Mis fallos' },
+];
 
-export const MathModule: React.FC<MathModuleProps> = ({
-  userId,
-  childId,
-  childName,
-  grade,
-  onAwardPoints,
-  onActivityLog,
-  books = [],
-  childrenList = []
-}) => {
-  const [activeTab, setActiveTab] = useState<'speed' | 'canvas' | 'photo' | 'worksheets'>('speed');
+const fmtNum = (n: number) => String(n).replace('.', ',');
 
-  // --- Photo & Analysis State ---
-  const [image, setImage] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [analysis, setAnalysis] = useState<MathAnalysis | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+export const MathModule: React.FC<MathModuleProps> = ({ childId, childName, grade, isDemo, onPoints, onDemoPoints, onOpenWorksheets, onActivityLog }) => {
+  const level = gradeLevel(grade);
+  const [tab, setTab] = useState<'challenge' | 'board'>('challenge');
 
-  // --- Speed Math State ---
-  const [speedGameActive, setSpeedGameActive] = useState(false);
-  const [timeLeft, setTimeLeft] = useState(45);
-  const [currentProblem, setCurrentProblem] = useState<SpeedProblem | null>(null);
-  const [score, setScore] = useState(0);
+  // ------------------------------------------------------------------ reto: ajustes
+  const [mode, setMode] = useState<ChallengeMode>('mixed');
+  const [table, setTable] = useState(7);
+  const [config, setConfig] = useState<MathConfig | null>(null);
+  const [answerStyle, setAnswerStyle] = useState<AnswerStyle>(defaultAnswerStyle(level));
+  const [styleTouched, setStyleTouched] = useState(false);
+
+  useEffect(() => {
+    if (isDemo) return;
+    mathService.config(childId, mode, mode === 'tables' ? table : undefined)
+      .then((c) => {
+        setConfig(c);
+        if (!styleTouched) setAnswerStyle(c.answerStyle || defaultAnswerStyle(level));
+      })
+      .catch(() => setConfig(null));
+  }, [childId, mode, table, isDemo]);
+
+  // ------------------------------------------------------------------ reto: partida
+  const [phase, setPhase] = useState<'setup' | 'playing' | 'saving' | 'done'>('setup');
+  const [problem, setProblem] = useState<MathProblem | null>(null);
+  const [options, setOptions] = useState<number[]>([]);
+  const [typed, setTyped] = useState('');
+  const [timeLeft, setTimeLeft] = useState(DURATION);
   const [streak, setStreak] = useState(0);
-  const [highestStreak, setHighestStreak] = useState(0);
-  const [feedbackEffect, setFeedbackEffect] = useState<'correct' | 'wrong' | null>(null);
-  const [gameFinished, setGameFinished] = useState(false);
-  const [selectedOperation, setSelectedOperation] = useState<'all' | 'add_sub' | 'multi' | 'div'>('all');
+  const [stats, setStats] = useState({ correct: 0, wrong: 0, best: 0 });
+  const [flash, setFlash] = useState<null | { ok: boolean; answer: number }>(null);
+  const [result, setResult] = useState<ChallengeResult | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const answersRef = useRef<{ problem: MathProblem; given: number | null }[]>([]);
+  const difficultyRef = useRef(level);
+  const runRef = useRef({ okRow: 0, koRow: 0, levelEnd: level });
   const timerRef = useRef<any>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  // --- Canvas Scratchpad State ---
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [isDrawing, setIsDrawing] = useState(false);
-  const [penColor, setPenColor] = useState('#1e293b');
-  const [penSize, setPenSize] = useState(4);
-  const [isEraser, setIsEraser] = useState(false);
-
-  // -------------------------------------------------------------
-  // Speed Math Generator
-  // -------------------------------------------------------------
-  const generateProblem = (): SpeedProblem => {
-    let op: '+' | '-' | '×' | '÷' = '+';
-    if (selectedOperation === 'add_sub') {
-      op = Math.random() > 0.5 ? '+' : '-';
-    } else if (selectedOperation === 'multi') {
-      op = '×';
-    } else if (selectedOperation === 'div') {
-      op = '÷';
-    } else {
-      const ops: ('+' | '-' | '×' | '÷')[] = ['+', '-', '×', '÷'];
-      // If lower grade, stick to + and -
-      if (grade.includes('1') || grade.includes('2')) {
-        op = Math.random() > 0.4 ? '+' : '-';
-      } else {
-        op = ops[Math.floor(Math.random() * ops.length)];
-      }
-    }
-
-    let n1 = 0;
-    let n2 = 0;
-    let ans = 0;
-
-    if (op === '+') {
-      const max = grade.includes('1') || grade.includes('2') ? 20 : 100;
-      n1 = Math.floor(Math.random() * (max - 2)) + 2;
-      n2 = Math.floor(Math.random() * (max - n1)) + 1;
-      ans = n1 + n2;
-    } else if (op === '-') {
-      const max = grade.includes('1') || grade.includes('2') ? 20 : 100;
-      n1 = Math.floor(Math.random() * max) + 5;
-      n2 = Math.floor(Math.random() * n1) + 1;
-      ans = n1 - n2;
-    } else if (op === '×') {
-      n1 = Math.floor(Math.random() * 9) + 2;
-      n2 = Math.floor(Math.random() * 9) + 2;
-      ans = n1 * n2;
-    } else {
-      // Division exact
-      n2 = Math.floor(Math.random() * 8) + 2;
-      ans = Math.floor(Math.random() * 10) + 1;
-      n1 = n2 * ans;
-    }
-
-    // Generate 3 distractors
-    const optionsSet = new Set<number>([ans]);
-    while (optionsSet.size < 4) {
-      const offset = (Math.floor(Math.random() * 6) + 1) * (Math.random() > 0.5 ? 1 : -1);
-      const wrong = Math.max(0, ans + offset);
-      optionsSet.add(wrong);
-    }
-    const options = Array.from(optionsSet).sort(() => Math.random() - 0.5);
-
-    return { num1: n1, num2: n2, operator: op, answer: ans, options };
+  const nextProblem = () => {
+    const p = generateProblem(mode, difficultyRef.current, { table, mistakes: config?.mistakes });
+    setProblem(p);
+    setOptions(makeOptions(p));
+    setTyped('');
+    setTimeout(() => inputRef.current?.focus(), 30);
   };
 
-  const startSpeedGame = () => {
-    setScore(0);
+  const start = () => {
+    answersRef.current = [];
+    difficultyRef.current = level;
+    runRef.current = { okRow: 0, koRow: 0, levelEnd: level };
+    setStats({ correct: 0, wrong: 0, best: 0 });
     setStreak(0);
-    setHighestStreak(0);
-    setTimeLeft(45);
-    setGameFinished(false);
-    setSpeedGameActive(true);
-    setCurrentProblem(generateProblem());
-
-    if (timerRef.current) clearInterval(timerRef.current);
+    setResult(null);
+    setSaveError(null);
+    setTimeLeft(DURATION);
+    setPhase('playing');
+    nextProblem();
+    clearInterval(timerRef.current);
     timerRef.current = setInterval(() => {
-      setTimeLeft(prev => {
-        if (prev <= 1) {
-          clearInterval(timerRef.current);
-          finishSpeedGame();
-          return 0;
-        }
-        return prev - 1;
+      setTimeLeft((t) => {
+        if (t <= 1) { clearInterval(timerRef.current); finish(); return 0; }
+        return t - 1;
       });
     }, 1000);
   };
 
-  const finishSpeedGame = () => {
-    setSpeedGameActive(false);
-    setGameFinished(true);
+  useEffect(() => () => clearInterval(timerRef.current), []);
+
+  const answer = (given: number | null) => {
+    if (!problem || phase !== 'playing' || flash) return;
+    const ok = isCorrect(problem, given);
+    answersRef.current.push({ problem, given });
+    // Dificultad adaptativa: 4 seguidas bien → sube; 2 seguidas mal → baja (sin pasar ±2 del curso)
+    const r = runRef.current;
+    if (ok) { r.okRow++; r.koRow = 0; } else { r.koRow++; r.okRow = 0; }
+    if (r.okRow >= 4) { difficultyRef.current = Math.min(10, level + 2, difficultyRef.current + 1); r.okRow = 0; }
+    if (r.koRow >= 2) { difficultyRef.current = Math.max(1, level - 2, difficultyRef.current - 1); r.koRow = 0; }
+    r.levelEnd = difficultyRef.current;
+    const newStreak = ok ? streak + 1 : 0;
+    setStreak(newStreak);
+    setStats((s) => ({ correct: s.correct + (ok ? 1 : 0), wrong: s.wrong + (ok ? 0 : 1), best: Math.max(s.best, newStreak) }));
+    setFlash({ ok, answer: evaluate(problem) as number });
+    setTimeout(() => { setFlash(null); nextProblem(); }, ok ? 300 : 1100);
   };
+
+  const finish = async () => {
+    setPhase('saving');
+    const answers = answersRef.current;
+    const correct = answers.filter((a) => isCorrect(a.problem, a.given)).length;
+    onActivityLog?.('Reto de cálculo', 'Matemáticas', { type: 'math_speed_challenge', score: correct, total: answers.length });
+    if (isDemo) {
+      const pts = correct > 0 ? Math.max(5, correct * 3) : 0;
+      onDemoPoints?.(pts);
+      setResult({ correct, wrong: answers.length - correct, bestStreak: 0, points: pts, pointsCapReached: false, pointsLeft: 0, newPoints: 0, record: correct, newRecord: false, previousRecord: 0, weak: [] });
+      setPhase('done');
+      return;
+    }
+    if (!answers.length) { setPhase('done'); setResult(null); return; }
+    try {
+      const r = await mathService.saveChallenge({ childId, mode, table: mode === 'tables' ? table : undefined, answerStyle, levelStart: level, levelEnd: runRef.current.levelEnd, duration: DURATION, answers });
+      setResult(r);
+      onPoints(r.newPoints, r.points);
+      mathService.config(childId, mode, mode === 'tables' ? table : undefined).then(setConfig).catch(() => {});
+    } catch (e: any) {
+      setSaveError(e.message);
+    }
+    setPhase('done');
+  };
+
+  // ------------------------------------------------------------------ pizarra
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const drawing = useRef(false);
+  const [isEraser, setIsEraser] = useState(false);
+  const [boardUsed, setBoardUsed] = useState(false);
 
   useEffect(() => {
-    if (gameFinished) {
-      // Award XP based on score and combo
-      const earnedXP = Math.max(5, score * 3 + highestStreak * 2);
-      onAwardPoints(earnedXP);
-
-      if (onActivityLog) {
-        onActivityLog("Reto de Cálculo Mental", "Matemáticas", {
-          text: `Completado reto de cálculo mental con ${score} aciertos y racha de ${highestStreak} seguidos.`,
-          type: 'math_speed_challenge',
-          score,
-          highestStreak,
-          earnedXP
-        });
-      }
-    }
-  }, [gameFinished]);
-
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, []);
-
-  const handleSpeedAnswer = (selected: number) => {
-    if (!currentProblem || !speedGameActive) return;
-
-    if (selected === currentProblem.answer) {
-      setFeedbackEffect('correct');
-      setScore(s => s + 1);
-      setStreak(st => {
-        const next = st + 1;
-        if (next > highestStreak) setHighestStreak(next);
-        return next;
-      });
-    } else {
-      setFeedbackEffect('wrong');
-      setStreak(0);
-    }
-
-    setTimeout(() => {
-      setFeedbackEffect(null);
-      setCurrentProblem(generateProblem());
-    }, 300);
-  };
-
-  // -------------------------------------------------------------
-  // Canvas Scratchpad Logic
-  // -------------------------------------------------------------
-  useEffect(() => {
-    if (activeTab === 'canvas' && canvasRef.current) {
-      const canvas = canvasRef.current;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        // High DPI support
-        const rect = canvas.getBoundingClientRect();
-        canvas.width = rect.width * 2;
-        canvas.height = rect.height * 2;
-        ctx.scale(2, 2);
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        // Fill white background
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, rect.width, rect.height);
-      }
-    }
-  }, [activeTab]);
-
-  const getCanvasCoords = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
-    if (!canvasRef.current) return { x: 0, y: 0 };
-    const rect = canvasRef.current.getBoundingClientRect();
-    if ('touches' in e && e.touches.length > 0) {
-      return {
-        x: e.touches[0].clientX - rect.left,
-        y: e.touches[0].clientY - rect.top
-      };
-    } else if ('clientX' in e) {
-      return {
-        x: (e as React.MouseEvent).clientX - rect.left,
-        y: (e as React.MouseEvent).clientY - rect.top
-      };
-    }
-    return { x: 0, y: 0 };
-  };
-
-  const startDrawing = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
-    setIsDrawing(true);
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    const { x, y } = getCanvasCoords(e);
-    ctx.beginPath();
-    ctx.moveTo(x, y);
-  };
-
-  const draw = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
-    if (!isDrawing || !canvasRef.current) return;
-    const ctx = canvasRef.current.getContext('2d');
-    if (!ctx) return;
-
-    const { x, y } = getCanvasCoords(e);
-    ctx.strokeStyle = isEraser ? '#ffffff' : penColor;
-    ctx.lineWidth = isEraser ? penSize * 3 : penSize;
-    ctx.lineTo(x, y);
-    ctx.stroke();
-  };
-
-  const stopDrawing = () => {
-    setIsDrawing(false);
-  };
-
-  const clearCanvas = () => {
-    if (!canvasRef.current) return;
+    if (tab !== 'board' || !canvasRef.current) return;
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     const rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width * 2;
+    canvas.height = rect.height * 2;
+    ctx.scale(2, 2);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, rect.width, rect.height);
-  };
+    setBoardUsed(false);
+  }, [tab]);
 
-  const analyzeCanvasWithAI = () => {
+  const coords = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
+    const rect = canvasRef.current!.getBoundingClientRect();
+    if ('touches' in e && e.touches.length) return { x: e.touches[0].clientX - rect.left, y: e.touches[0].clientY - rect.top };
+    const m = e as React.MouseEvent;
+    return { x: m.clientX - rect.left, y: m.clientY - rect.top };
+  };
+  const startDraw = (e: any) => {
+    const ctx = canvasRef.current?.getContext('2d');
+    if (!ctx) return;
+    drawing.current = true;
+    const { x, y } = coords(e);
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+  };
+  const draw = (e: any) => {
+    if (!drawing.current) return;
+    const ctx = canvasRef.current?.getContext('2d');
+    if (!ctx) return;
+    const { x, y } = coords(e);
+    ctx.strokeStyle = isEraser ? '#ffffff' : '#1e293b';
+    ctx.lineWidth = isEraser ? 18 : 4;
+    ctx.lineTo(x, y);
+    ctx.stroke();
+    setBoardUsed(true);
+  };
+  const clearBoard = () => {
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext('2d');
+    if (!canvas || !ctx) return;
+    const rect = canvas.getBoundingClientRect();
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, rect.width, rect.height);
+    setBoardUsed(false);
+  };
+  const correctBoard = () => {
     if (!canvasRef.current) return;
-    const base64 = canvasRef.current.toDataURL('image/jpeg', 0.9);
-    setImage(base64);
-    setActiveTab('photo');
-    handleDirectAnalyze(base64);
+    onOpenWorksheets({ homeworkImage: canvasRef.current.toDataURL('image/jpeg', 0.85) });
   };
 
-  // -------------------------------------------------------------
-  // Photo AI Analysis
-  // -------------------------------------------------------------
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setImage(reader.result as string);
-        setAnalysis(null);
-        setError(null);
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  const handleDirectAnalyze = async (imgData: string) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const result = await mathService.analyzeMathProblem(imgData, grade);
-      setAnalysis(result);
-
-      const sessionData = {
-        id: crypto.randomUUID(),
-        userId,
-        childId,
-        imageUrl: imgData,
-        score: result.score,
-        analysis: result,
-        timestamp: Date.now()
-      };
-
-      try {
-        await fetch(`api_study.php?action=save_math_session&userId=${userId}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(sessionData)
-        });
-      } catch (e) {
-        console.error("Error guardando sesión de matemáticas:", e);
-      }
-
-      if (onActivityLog) {
-        onActivityLog("Análisis Matemático", "Matemáticas", {
-          text: result.generalFeedback,
-          type: 'math_analysis',
-          score: result.score,
-          image: imgData
-        });
-      }
-
-      if (result.score >= 7) {
-        onAwardPoints(20);
-      } else {
-        onAwardPoints(10);
-        await srsService.scheduleReviews(childId, result.topic || "Matemáticas", "Matemáticas", sessionData.id);
-      }
-    } catch (err) {
-      setError('No pudimos analizar la imagen. Asegúrate de que los números sean legibles e inténtalo de nuevo.');
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  };
+  // ------------------------------------------------------------------ pantalla
+  const tabBtn = (id: 'challenge' | 'board', label: string) => (
+    <button onClick={() => setTab(id)} role="tab" aria-selected={tab === id}
+      className={`px-4 py-2 rounded-xl text-xs font-black transition-all ${tab === id ? 'bg-white text-orange-600 shadow-md' : 'text-white/80 hover:bg-white/10'}`}>
+      {label}
+    </button>
+  );
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500 pb-20 max-w-5xl mx-auto">
-      {/* Header Banner */}
       <div className="bg-gradient-to-r from-amber-500 via-orange-600 to-red-500 rounded-[2.5rem] p-6 sm:p-8 text-white shadow-xl">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
-            <span className="bg-white/20 backdrop-blur text-xs font-black px-3 py-1 rounded-full uppercase tracking-wider mb-2 inline-block">
-              Taller de Matemáticas J21
-            </span>
-            <h2 className="text-2xl sm:text-3xl font-black flex items-center gap-3">
-              🔢 ¡Hola {childName}!
-            </h2>
-            <p className="opacity-90 text-sm font-medium mt-1">
-              Practica cálculo mental contra reloj, haz cuentas en la pizarra táctil o pide a la IA que revise tu cuaderno.
-            </p>
+            <h2 className="text-2xl sm:text-3xl font-black">🔢 ¡Hola {childName}!</h2>
+            <p className="opacity-90 text-sm font-medium mt-1">Cálculo mental contra reloj a tu nivel, y una pizarra para hacer cuentas.</p>
           </div>
-
-          {/* Tab Selector */}
-          <div className="bg-black/20 p-1.5 rounded-2xl flex gap-1 self-start sm:self-center border border-white/10">
-            <button
-              onClick={() => setActiveTab('speed')}
-              className={`px-4 py-2 rounded-xl text-xs font-black transition-all ${
-                activeTab === 'speed' ? 'bg-white text-orange-600 shadow-md' : 'text-white/80 hover:bg-white/10'
-              }`}
-            >
-              ⚡ Reto Rápido
-            </button>
-            <button
-              onClick={() => setActiveTab('canvas')}
-              className={`px-4 py-2 rounded-xl text-xs font-black transition-all ${
-                activeTab === 'canvas' ? 'bg-white text-orange-600 shadow-md' : 'text-white/80 hover:bg-white/10'
-              }`}
-            >
-              🎨 Pizarra Táctil
-            </button>
-            <button
-              onClick={() => setActiveTab('photo')}
-              className={`px-4 py-2 rounded-xl text-xs font-black transition-all ${
-                activeTab === 'photo' ? 'bg-white text-orange-600 shadow-md' : 'text-white/80 hover:bg-white/10'
-              }`}
-            >
-              📸 Foto Cuaderno
-            </button>
-            <button
-              onClick={() => setActiveTab('worksheets')}
-              className={`px-4 py-2 rounded-xl text-xs font-black transition-all ${
-                activeTab === 'worksheets' ? 'bg-white text-orange-600 shadow-md' : 'text-white/80 hover:bg-white/10'
-              }`}
-            >
-              📄 Hojas en Papel A4
-            </button>
+          <div className="bg-black/20 p-1.5 rounded-2xl flex gap-1 self-start sm:self-center border border-white/10" role="tablist">
+            {tabBtn('challenge', '⚡ Reto de cálculo')}
+            {tabBtn('board', '✏️ Pizarra')}
           </div>
+        </div>
+        <div className="flex flex-wrap gap-2 mt-4">
+          <button onClick={() => onOpenWorksheets({ openPhoto: true })} className="bg-white/15 hover:bg-white/25 border border-white/20 text-white text-xs font-black px-4 py-2 rounded-xl">📸 Hago una foto de mis cuentas</button>
+          <button onClick={() => onOpenWorksheets({ subject: 'Matemáticas' })} className="bg-white/15 hover:bg-white/25 border border-white/20 text-white text-xs font-black px-4 py-2 rounded-xl">📄 Mis fichas de mates</button>
         </div>
       </div>
 
-      {/* ------------------------------------------------------------- */}
-      {/* TAB 1: SPEED MATH ARCADE */}
-      {/* ------------------------------------------------------------- */}
-      {activeTab === 'speed' && (
-        <div className="bg-white rounded-[2.5rem] p-6 sm:p-8 shadow-xl border border-orange-50 space-y-6">
-          {!speedGameActive && !gameFinished && (
-            <div className="text-center py-8 max-w-lg mx-auto space-y-6">
-              <div className="w-24 h-24 bg-orange-100 rounded-3xl mx-auto flex items-center justify-center text-5xl shadow-inner animate-bounce">
-                ⏱️
-              </div>
-              <div>
-                <h3 className="text-2xl font-black text-slate-800">Reto de Cálculo Mental</h3>
-                <p className="text-slate-500 text-sm mt-1">
-                  Resuelve tantas operaciones como puedas en 45 segundos. ¡Mantén la racha para conseguir combos de puntos!
-                </p>
-              </div>
-
-              {/* Operations selector */}
-              <div className="bg-slate-50 p-3 rounded-2xl border border-slate-100 flex flex-wrap justify-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setSelectedOperation('all')}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                    selectedOperation === 'all' ? 'bg-orange-600 text-white shadow' : 'bg-white text-slate-600'
-                  }`}
-                >
-                  Todas las Operaciones
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSelectedOperation('add_sub')}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                    selectedOperation === 'add_sub' ? 'bg-orange-600 text-white shadow' : 'bg-white text-slate-600'
-                  }`}
-                >
-                  Sumas y Restas
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSelectedOperation('multi')}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                    selectedOperation === 'multi' ? 'bg-orange-600 text-white shadow' : 'bg-white text-slate-600'
-                  }`}
-                >
-                  Tablas de Multiplicar
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSelectedOperation('div')}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                    selectedOperation === 'div' ? 'bg-orange-600 text-white shadow' : 'bg-white text-slate-600'
-                  }`}
-                >
-                  Divisiones
-                </button>
-              </div>
-
-              <button
-                onClick={startSpeedGame}
-                className="w-full py-4 rounded-2xl bg-orange-600 text-white text-lg font-black shadow-xl hover:bg-orange-500 transition-all transform active:scale-95"
-              >
-                🚀 ¡Empezar Reto (45s)!
-              </button>
+      {tab === 'challenge' && phase === 'setup' && (
+        <div className="bg-white rounded-[2.5rem] p-6 sm:p-8 border border-orange-100 shadow-sm space-y-6">
+          <div>
+            <h3 className="text-sm font-black text-orange-900 uppercase tracking-wider mb-3">¿Qué practicamos?</h3>
+            <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Modo">
+              {MODES.map((m) => {
+                const disabled = m.id === 'mistakes' && !isDemo && !(config?.mistakes?.length);
+                return (
+                  <button key={m.id} role="radio" aria-checked={mode === m.id} disabled={disabled || (isDemo && m.id === 'mistakes')} onClick={() => setMode(m.id)}
+                    title={disabled ? 'Aún no hay operaciones que se te resistan' : undefined}
+                    className={`px-4 py-2 rounded-xl text-sm font-black border-2 transition-all disabled:opacity-40 ${mode === m.id ? 'bg-orange-600 text-white border-orange-600' : 'bg-white text-orange-700 border-orange-100 hover:border-orange-300'}`}>
+                    {m.label}
+                  </button>
+                );
+              })}
             </div>
-          )}
-
-          {speedGameActive && currentProblem && (
-            <div className="space-y-6">
-              {/* Status Bar */}
-              <div className="grid grid-cols-3 gap-3 text-center">
-                <div className="bg-orange-50 p-3 rounded-2xl border border-orange-100">
-                  <span className="text-[10px] font-black uppercase tracking-wider text-orange-500 block">Tiempo</span>
-                  <span className={`text-2xl font-black ${timeLeft <= 10 ? 'text-red-600 animate-pulse' : 'text-slate-800'}`}>
-                    ⏳ {timeLeft}s
-                  </span>
-                </div>
-
-                <div className="bg-emerald-50 p-3 rounded-2xl border border-emerald-100">
-                  <span className="text-[10px] font-black uppercase tracking-wider text-emerald-600 block">Aciertos</span>
-                  <span className="text-2xl font-black text-emerald-700">🎯 {score}</span>
-                </div>
-
-                <div className="bg-amber-50 p-3 rounded-2xl border border-amber-100">
-                  <span className="text-[10px] font-black uppercase tracking-wider text-amber-600 block">Racha Combo</span>
-                  <span className="text-2xl font-black text-amber-700">
-                    🔥 x{streak}
-                  </span>
-                </div>
-              </div>
-
-              {/* Problem Display */}
-              <div className={`p-10 rounded-3xl border-2 text-center transition-all ${
-                feedbackEffect === 'correct' 
-                  ? 'bg-emerald-50 border-emerald-300 scale-105' 
-                  : feedbackEffect === 'wrong' 
-                  ? 'bg-rose-50 border-rose-300 scale-95' 
-                  : 'bg-slate-50 border-slate-200'
-              }`}>
-                <div className="text-5xl sm:text-7xl font-black text-slate-800 tracking-wider">
-                  {currentProblem.num1} {currentProblem.operator} {currentProblem.num2} = ?
-                </div>
-              </div>
-
-              {/* Options Grid */}
-              <div className="grid grid-cols-2 gap-4">
-                {currentProblem.options.map((opt, idx) => (
-                  <button
-                    key={idx}
-                    type="button"
-                    onClick={() => handleSpeedAnswer(opt)}
-                    className="py-5 sm:py-6 rounded-2xl bg-white border-2 border-orange-200 hover:border-orange-500 hover:bg-orange-50 text-2xl sm:text-3xl font-black text-slate-800 shadow-md transition-all transform active:scale-95"
-                  >
-                    {opt}
+          </div>
+          {mode === 'tables' && (
+            <div>
+              <h3 className="text-sm font-black text-orange-900 uppercase tracking-wider mb-3">¿Qué tabla?</h3>
+              <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Tabla">
+                {[2, 3, 4, 5, 6, 7, 8, 9, 10].map((t) => (
+                  <button key={t} role="radio" aria-checked={table === t} onClick={() => setTable(t)}
+                    className={`w-12 h-12 rounded-xl text-lg font-black border-2 ${table === t ? 'bg-orange-600 text-white border-orange-600' : 'bg-white text-orange-700 border-orange-100'}`}>
+                    {t}
                   </button>
                 ))}
               </div>
             </div>
           )}
-
-          {gameFinished && (
-            <div className="text-center py-8 space-y-6 animate-in zoom-in duration-300">
-              <div className="w-24 h-24 bg-amber-100 rounded-full mx-auto flex items-center justify-center text-5xl shadow-lg">
-                🏆
-              </div>
-              <div>
-                <h3 className="text-3xl font-black text-slate-800">¡Reto Completado!</h3>
-                <p className="text-slate-500 text-sm mt-1">Has demostrado gran velocidad mental.</p>
-              </div>
-
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 max-w-md mx-auto">
-                <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
-                  <span className="text-xs font-bold text-slate-400 block">Aciertos Totales</span>
-                  <span className="text-2xl font-black text-slate-800">{score}</span>
-                </div>
-                <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
-                  <span className="text-xs font-bold text-slate-400 block">Mejor Racha</span>
-                  <span className="text-2xl font-black text-amber-600">🔥 {highestStreak}</span>
-                </div>
-                <div className="bg-emerald-50 p-4 rounded-2xl border border-emerald-100 col-span-2 sm:col-span-1">
-                  <span className="text-xs font-bold text-emerald-600 block">Puntos Ganados</span>
-                  <span className="text-2xl font-black text-emerald-700">+{Math.max(5, score * 3 + highestStreak * 2)} XP</span>
-                </div>
-              </div>
-
-              <div className="flex flex-col sm:flex-row gap-3 justify-center">
-                <button
-                  onClick={startSpeedGame}
-                  className="px-8 py-3 rounded-xl bg-orange-600 text-white font-black hover:bg-orange-500 shadow-lg transition-all"
-                >
-                  🔄 Jugar Otra Vez
-                </button>
-                <button
-                  onClick={() => setActiveTab('canvas')}
-                  className="px-8 py-3 rounded-xl bg-slate-100 text-slate-700 font-black hover:bg-slate-200 transition-all"
-                >
-                  ✏️ Ir a la Pizarra
-                </button>
-              </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="text-sm font-black text-orange-900">Responder:</span>
+            {(['typed', 'choice'] as AnswerStyle[]).map((s) => (
+              <button key={s} onClick={() => { setAnswerStyle(s); setStyleTouched(true); }} aria-pressed={answerStyle === s}
+                className={`px-4 py-2 rounded-xl text-sm font-black border-2 ${answerStyle === s ? 'bg-orange-100 text-orange-800 border-orange-300' : 'bg-white text-orange-500 border-orange-100'}`}>
+                {s === 'typed' ? '⌨️ Escribiendo' : '👆 Eligiendo entre 4'}
+              </button>
+            ))}
+          </div>
+          {config && config.weak.length > 0 && (
+            <div className="bg-rose-50 border border-rose-100 rounded-2xl p-4" data-testid="weak-facts">
+              <p className="text-sm font-black text-rose-900 mb-1">🎯 Se te resisten</p>
+              <p className="text-sm text-rose-700">{config.weak.slice(0, 5).map((w) => w.label).join(' · ')}</p>
+              <p className="text-xs text-rose-500 mt-1">Prueba el modo «Mis fallos» para dominarlas.</p>
             </div>
           )}
-        </div>
-      )}
-
-      {/* ------------------------------------------------------------- */}
-      {/* TAB 2: CANVAS SCRATCHPAD */}
-      {/* ------------------------------------------------------------- */}
-      {activeTab === 'canvas' && (
-        <div className="bg-white rounded-[2.5rem] p-6 shadow-xl border border-orange-50 space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3 pb-2 border-b border-slate-100">
-            <div>
-              <h3 className="font-black text-slate-800 text-lg flex items-center gap-2">
-                🎨 Pizarra Táctil Libre
-              </h3>
-              <p className="text-xs text-slate-500">Usa tu dedo, lápiz o ratón para hacer cálculos intermedios o resolver cuentas.</p>
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="text-sm font-bold text-orange-700 space-y-0.5">
+              {config && <p>🏆 Tu récord aquí: <strong>{config.record}</strong> aciertos</p>}
+              {config && <p>⭐ Puntos por retos hoy: {config.pointsToday} de {config.pointsCap}{config.pointsLeft === 0 ? ' (hoy ya no suman, ¡pero sigue practicando!)' : ''}</p>}
             </div>
-
-            {/* Toolbar */}
-            <div className="flex items-center gap-2 flex-wrap">
-              {/* Color picker */}
-              <div className="flex gap-1 bg-slate-100 p-1 rounded-xl">
-                {['#1e293b', '#2563eb', '#dc2626', '#16a34a'].map(c => (
-                  <button
-                    key={c}
-                    type="button"
-                    onClick={() => { setPenColor(c); setIsEraser(false); }}
-                    className={`w-6 h-6 rounded-lg transition-transform ${penColor === c && !isEraser ? 'scale-125 ring-2 ring-orange-500' : ''}`}
-                    style={{ backgroundColor: c }}
-                  />
-                ))}
-              </div>
-
-              {/* Eraser Toggle */}
-              <button
-                type="button"
-                onClick={() => setIsEraser(!isEraser)}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all ${
-                  isEraser ? 'bg-amber-500 text-white border-amber-600' : 'bg-slate-50 text-slate-600 border-slate-200'
-                }`}
-              >
-                🧹 Goma
-              </button>
-
-              {/* Clear */}
-              <button
-                type="button"
-                onClick={clearCanvas}
-                className="px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-50 text-rose-600 border border-slate-200 hover:bg-rose-50 transition-all"
-              >
-                🗑️ Limpiar
-              </button>
-            </div>
-          </div>
-
-          {/* Interactive Canvas */}
-          <div className="relative border-2 border-slate-200 rounded-3xl overflow-hidden shadow-inner bg-white touch-none">
-            <canvas
-              ref={canvasRef}
-              onMouseDown={startDrawing}
-              onMouseMove={draw}
-              onMouseUp={stopDrawing}
-              onMouseLeave={stopDrawing}
-              onTouchStart={startDrawing}
-              onTouchMove={draw}
-              onTouchEnd={stopDrawing}
-              className="w-full h-[360px] sm:h-[450px] cursor-crosshair block"
-            />
-          </div>
-
-          <div className="flex flex-col sm:flex-row justify-between items-center gap-3 pt-2">
-            <span className="text-xs text-slate-500 font-medium">
-              💡 Puedes escribir aquí tus operaciones y pulsar el botón para que Gemini las revise.
-            </span>
-            <button
-              onClick={analyzeCanvasWithAI}
-              className="w-full sm:w-auto px-6 py-3 rounded-xl bg-orange-600 text-white font-black text-sm shadow-md hover:bg-orange-500 transition-all flex items-center justify-center gap-2"
-            >
-              <span>✨ Analizar esta Pizarra con IA</span>
-            </button>
+            <button onClick={start} className="bg-orange-600 hover:bg-orange-700 text-white px-10 py-4 rounded-2xl font-black text-lg shadow-lg">¡Empezar! ({DURATION} s)</button>
           </div>
         </div>
       )}
 
-      {/* ------------------------------------------------------------- */}
-      {/* TAB 3: PHOTO ANALYZER (Cuaderno Físico) */}
-      {/* ------------------------------------------------------------- */}
-      {activeTab === 'photo' && (
-        <div className="bg-white rounded-[2.5rem] p-6 sm:p-8 shadow-xl border border-orange-50 space-y-6">
-          {!image ? (
-            <div 
-              onClick={() => fileInputRef.current?.click()}
-              className="border-4 border-dashed border-orange-100 rounded-[2rem] p-12 sm:p-16 text-center hover:border-orange-300 hover:bg-orange-50/50 transition-all cursor-pointer group"
-            >
-              <div className="text-6xl mb-4 group-hover:scale-110 transition-transform">📸</div>
-              <h3 className="text-xl font-bold text-orange-900">Sube una foto de tu operación</h3>
-              <p className="text-orange-400 mt-2 text-sm">Pulsa aquí para usar la cámara o elegir una foto de tu libreta</p>
-              <input 
-                type="file" 
-                ref={fileInputRef} 
-                onChange={handleImageUpload} 
-                accept="image/*" 
-                className="hidden" 
-              />
-            </div>
+      {tab === 'challenge' && phase === 'playing' && problem && (
+        <div className={`bg-white rounded-[2.5rem] p-6 sm:p-10 shadow-xl border-4 transition-colors ${flash ? (flash.ok ? 'border-green-400' : 'border-rose-400') : 'border-orange-100'}`}>
+          <div className="flex justify-between items-center mb-8 text-sm font-black">
+            <span className={`px-4 py-2 rounded-full ${timeLeft <= 10 ? 'bg-rose-100 text-rose-600' : 'bg-orange-100 text-orange-700'}`} aria-live="off">⏱️ {timeLeft} s</span>
+            <span className="text-green-600">✅ {stats.correct}</span>
+            <span className="text-orange-600">🔥 {streak}</span>
+          </div>
+          <p className="text-center text-5xl sm:text-6xl font-black text-slate-800 mb-8 tracking-wide" data-testid="math-problem" data-op={JSON.stringify(problem)}>
+            {problemText(problem)} = ?
+          </p>
+          {flash && !flash.ok && <p className="text-center text-lg font-black text-rose-600 mb-4" role="status">Era {fmtNum(flash.answer)}</p>}
+          {answerStyle === 'typed' ? (
+            <form onSubmit={(e) => { e.preventDefault(); const v = parseAnswer(typed); if (v !== null) answer(v); }} className="flex justify-center gap-3">
+              <label htmlFor="math-answer" className="sr-only">Tu respuesta</label>
+              <input id="math-answer" ref={inputRef} value={typed} onChange={(e) => setTyped(e.target.value)} inputMode="decimal" autoComplete="off" disabled={!!flash}
+                className="w-48 text-center text-4xl font-black border-4 border-orange-200 rounded-2xl py-3 outline-none focus:border-orange-500" />
+              <button type="submit" disabled={parseAnswer(typed) === null || !!flash} className="bg-orange-600 text-white px-6 rounded-2xl font-black text-lg disabled:opacity-40">OK</button>
+            </form>
           ) : (
-            <div className="space-y-6">
-              <div className="relative rounded-[2rem] overflow-hidden shadow-lg border-4 border-white aspect-video bg-slate-100 max-h-[350px] mx-auto">
-                <img src={image} alt="Operación" className="w-full h-full object-contain" />
-                <button 
-                  onClick={() => { setImage(null); setAnalysis(null); }}
-                  className="absolute top-4 right-4 bg-white/90 backdrop-blur p-2 rounded-full shadow-lg hover:bg-red-50 text-red-500 transition-all"
-                  title="Eliminar imagen"
-                >
-                  ✕
+            <div className="grid grid-cols-2 gap-4 max-w-md mx-auto">
+              {options.map((o, i) => (
+                <button key={i} onClick={() => answer(o)} disabled={!!flash} className="bg-orange-50 hover:bg-orange-100 border-2 border-orange-200 rounded-2xl py-5 text-3xl font-black text-orange-900">
+                  {fmtNum(o)}
                 </button>
-              </div>
-
-              {!analysis && (
-                <button
-                  onClick={() => handleDirectAnalyze(image)}
-                  disabled={loading}
-                  className={`w-full py-4 rounded-2xl font-black text-white text-base sm:text-lg shadow-xl transition-all active:scale-95 ${
-                    loading ? 'bg-slate-400' : 'bg-orange-600 hover:bg-orange-500'
-                  }`}
-                >
-                  {loading ? (
-                    <span className="flex items-center justify-center gap-3">
-                      <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                      Analizando con IA Multimodal...
-                    </span>
-                  ) : '🔍 Analizar Operación'}
-                </button>
-              )}
-            </div>
-          )}
-
-          {error && (
-            <div className="bg-red-50 text-red-600 p-4 rounded-2xl text-center font-bold text-sm">
-              {error}
-            </div>
-          )}
-
-          {analysis && (
-            <div className="space-y-6 animate-in slide-in-from-bottom-6 duration-500">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className="bg-orange-50 p-6 rounded-[2rem] text-center border border-orange-100">
-                  <div className="text-4xl font-black text-orange-600 mb-1">{analysis.score}/10</div>
-                  <div className="text-[10px] font-black uppercase tracking-widest text-orange-400">Puntuación</div>
-                </div>
-                <div className="md:col-span-2 bg-amber-50 p-6 rounded-[2rem] border border-amber-100">
-                  <h4 className="font-black text-amber-900 mb-1">✨ Feedback de la IA</h4>
-                  <p className="text-amber-800 italic text-sm leading-relaxed">"{analysis.generalFeedback}"</p>
-                </div>
-              </div>
-
-              {/* Steps */}
-              <div className="space-y-3">
-                <h4 className="font-black text-slate-800 flex items-center gap-2 text-sm">
-                  <span className="w-2 h-5 bg-orange-500 rounded-full"></span>
-                  Análisis Paso a Paso
-                </h4>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {analysis.steps.map((step, i) => (
-                    <div key={i} className={`p-4 rounded-2xl border-2 transition-all shadow-sm ${
-                      step.isCorrect ? 'bg-emerald-50 border-emerald-100' : 'bg-rose-50 border-rose-100'
-                    }`}>
-                      <div className="flex justify-between items-center mb-1">
-                        <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Paso {step.stepNumber}</span>
-                        <span className={`text-xs font-bold ${step.isCorrect ? 'text-emerald-600' : 'text-rose-600'}`}>
-                          {step.isCorrect ? '✅ Correcto' : '❌ Error'}
-                        </span>
-                      </div>
-                      <h5 className="font-black text-slate-800 text-sm mb-1">{step.description}</h5>
-                      <p className="text-xs text-slate-600 leading-relaxed">{step.explanation}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Errors if any */}
-              {analysis.errors.length > 0 && (
-                <div className="space-y-3">
-                  <h4 className="font-black text-slate-800 flex items-center gap-2 text-sm">
-                    <span className="w-2 h-5 bg-rose-500 rounded-full"></span>
-                    Errores Detectados
-                  </h4>
-                  <div className="space-y-3">
-                    {analysis.errors.map((err, i) => (
-                      <div key={i} className="bg-rose-50 p-4 rounded-2xl border border-rose-100">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="bg-rose-500 text-white px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-widest">
-                            {err.errorType}
-                          </span>
-                          <span className="text-[10px] font-bold text-rose-400 uppercase tracking-widest">En: {err.location}</span>
-                        </div>
-                        <p className="text-xs text-rose-900 font-medium mb-2">{err.explanation}</p>
-                        <div className="bg-white/70 p-2.5 rounded-xl border border-rose-200">
-                          <span className="text-[10px] font-black text-emerald-600 uppercase">Corrección:</span>
-                          <p className="text-xs text-emerald-800 font-bold">{err.correction}</p>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+              ))}
             </div>
           )}
         </div>
       )}
 
-      {/* ------------------------------------------------------------- */}
-      {/* TAB 4: PRINTABLE WORKSHEETS & SCANNER */}
-      {/* ------------------------------------------------------------- */}
-      {activeTab === 'worksheets' && (
-        <div className="animate-in fade-in duration-300">
-          <WorksheetHub
-            childrenList={childrenList.length > 0 ? childrenList : [{ id: childId, name: childName, grade: grade as any, points: 0, streak: { current: 0, lastActive: 0, multiplier: 1 }, avatar: '👦', badges: [] }]}
-            books={books}
-            userRole="student"
-            activeChildId={childId}
-            onAwardPoints={(_cId, pts) => onAwardPoints(pts)}
-          />
+      {tab === 'challenge' && phase === 'saving' && <p className="text-center text-orange-600 font-black animate-pulse py-16" role="status">Guardando tu reto…</p>}
+
+      {tab === 'challenge' && phase === 'done' && (
+        <div className="bg-white rounded-[2.5rem] p-8 shadow-xl border border-orange-100 text-center space-y-5" data-testid="challenge-result">
+          <div className="text-6xl" aria-hidden="true">{result?.newRecord ? '🏆' : '⚡'}</div>
+          <h3 className="text-3xl font-black text-orange-900">{result?.newRecord ? '¡Nuevo récord!' : '¡Reto terminado!'}</h3>
+          {result && (
+            <>
+              <div className="flex flex-wrap justify-center gap-4">
+                <div className="bg-green-50 px-6 py-4 rounded-3xl"><p className="text-xs font-black text-green-600 uppercase">Aciertos</p><p className="text-4xl font-black text-green-700" data-testid="challenge-correct">{result.correct}</p></div>
+                <div className="bg-rose-50 px-6 py-4 rounded-3xl"><p className="text-xs font-black text-rose-500 uppercase">Fallos</p><p className="text-4xl font-black text-rose-600">{result.wrong}</p></div>
+                {!isDemo && <div className="bg-orange-50 px-6 py-4 rounded-3xl"><p className="text-xs font-black text-orange-500 uppercase">Mejor racha</p><p className="text-4xl font-black text-orange-600">{result.bestStreak}</p></div>}
+                <div className="bg-amber-50 px-6 py-4 rounded-3xl"><p className="text-xs font-black text-amber-500 uppercase">Puntos</p><p className="text-4xl font-black text-amber-600">+{result.points}</p></div>
+              </div>
+              {!isDemo && <p className="text-sm font-bold text-orange-700">{result.newRecord ? `Tu récord anterior era ${result.previousRecord}.` : `Tu récord: ${result.record} aciertos.`}</p>}
+              {result.pointsCapReached && <p className="text-sm font-bold text-amber-700 bg-amber-50 rounded-2xl px-4 py-2 inline-block">Hoy ya has llegado al máximo de puntos por retos. ¡Mañana más! Practicar sigue contando para tu récord.</p>}
+              {result.weak.length > 0 && <p className="text-sm text-rose-700">🎯 Para practicar: {result.weak.slice(0, 3).map((w) => w.label).join(' · ')}</p>}
+            </>
+          )}
+          {saveError && <p role="alert" className="text-sm font-bold text-rose-600">{saveError}</p>}
+          <div className="flex flex-wrap justify-center gap-3">
+            <button onClick={start} className="bg-orange-600 text-white px-8 py-4 rounded-2xl font-black shadow-lg">Otra vez</button>
+            <button onClick={() => setPhase('setup')} className="bg-orange-50 text-orange-700 px-8 py-4 rounded-2xl font-black">Cambiar de modo</button>
+          </div>
+        </div>
+      )}
+
+      {tab === 'board' && (
+        <div className="bg-white rounded-[2.5rem] p-6 border border-orange-100 shadow-sm space-y-4">
+          <p className="text-sm text-orange-800 font-medium">Haz aquí tus cuentas con el dedo o el ratón. Cuando termines, pulsa «Corrígeme» y te digo en qué te has equivocado (sin darte la solución).</p>
+          <canvas ref={canvasRef} className="w-full h-[420px] border-2 border-orange-100 rounded-2xl touch-none bg-white cursor-crosshair" aria-label="Pizarra para hacer cuentas"
+            onMouseDown={startDraw} onMouseMove={draw} onMouseUp={() => (drawing.current = false)} onMouseLeave={() => (drawing.current = false)}
+            onTouchStart={startDraw} onTouchMove={draw} onTouchEnd={() => (drawing.current = false)} />
+          <div className="flex flex-wrap gap-3">
+            <button onClick={() => setIsEraser(false)} aria-pressed={!isEraser} className={`px-4 py-2 rounded-xl text-sm font-black border-2 ${!isEraser ? 'bg-orange-100 border-orange-300 text-orange-800' : 'border-orange-100 text-orange-500'}`}>✏️ Lápiz</button>
+            <button onClick={() => setIsEraser(true)} aria-pressed={isEraser} className={`px-4 py-2 rounded-xl text-sm font-black border-2 ${isEraser ? 'bg-orange-100 border-orange-300 text-orange-800' : 'border-orange-100 text-orange-500'}`}>🧽 Goma</button>
+            <button onClick={clearBoard} className="px-4 py-2 rounded-xl text-sm font-black border-2 border-orange-100 text-orange-500">🗑️ Borrar todo</button>
+            <button onClick={correctBoard} disabled={!boardUsed || isDemo} className="ml-auto bg-orange-600 text-white px-6 py-2 rounded-xl text-sm font-black disabled:opacity-40">✅ Corrígeme</button>
+          </div>
+          {isDemo && <p className="text-xs font-bold text-amber-700">En el modo demostración la pizarra no se corrige. Crea una cuenta para probarlo.</p>}
         </div>
       )}
     </div>
   );
 };
-
 export default MathModule;

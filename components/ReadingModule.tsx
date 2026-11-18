@@ -1,676 +1,397 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { readingService } from '../services/readingService';
-import { ReadingAnalysis } from '../types/reading';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Subject } from '../types';
-import { srsService } from '../services/srsService';
-import { offlineStorageService } from '../services/offlineStorageService';
+import { readingService, ReadingList, ReadingStart, ReadingResult, TextCard, WpmReference, wpmMessage } from '../services/readingService';
+import { READING_LIBRARY, WPM_REFERENCE, QUESTION_LABELS, bandForLevel, wordCount } from '../shared/readingLibrary';
+import { gradeLevel } from '../services/mathChallenge';
 
 interface ReadingModuleProps {
-  userId: string;
   childId: string;
   childName: string;
   grade: string;
-  onAwardPoints: (points: number) => void;
+  isDemo: boolean;
+  /** El servidor ya ha sumado los puntos: aquí solo se actualiza la pantalla */
+  onPoints: (newPoints: number, earned: number) => void;
+  onDemoPoints?: (points: number) => void;
   onActivityLog?: (question: string, subject: Subject, answer: any) => void;
 }
 
-const SAMPLE_TEXTS: { [key: string]: { title: string; text: string; level: string }[] } = {
-  primaria_baja: [
-    {
-      title: "El conejo saltarín",
-      text: "El pequeño conejo blanco saltaba por el bosque verde. De repente, encontró una zanahoria gigante y se puso muy feliz.",
-      level: "1º - 2º Primaria"
-    },
-    {
-      title: "El dragón de burbujas",
-      text: "Había una vez un dragón que no echaba fuego, sino burbujas de jabón de muchos colores. Todos los niños del reino querían jugar con él.",
-      level: "1º - 2º Primaria"
-    }
-  ],
-  primaria_media: [
-    {
-      title: "El misterio del faro",
-      text: "Al anochecer, la luz dorada del faro comenzó a girar sobre las olas del mar. Un delfín curioso saltó saludando a los marineros que regresaban al puerto.",
-      level: "3º - 4º Primaria"
-    },
-    {
-      title: "La abeja exploradora",
-      text: "Maya era una abeja muy trabajadora que buscaba las flores silvestres más dulces en lo alto de la colina para llevar néctar a su colmena.",
-      level: "3º - 4º Primaria"
-    }
-  ],
-  primaria_alta: [
-    {
-      title: "Viaje al espacio",
-      text: "Los astronautas miraban la Tierra desde la cúpula de la nave espacial. Nuestro planeta brillaba como una canica azul y blanca suspendida en el silencio del cosmos.",
-      level: "5º - 6º Primaria"
-    },
-    {
-      title: "El reloj de sol romano",
-      text: "Hace dos mil años, los antiguos romanos utilizaban la sombra proyectada por el sol para medir las horas del día en las plazas públicas.",
-      level: "5º - 6º Primaria"
-    }
-  ]
+const GENRE_ICON: Record<string, string> = {
+  cuento: '📖', fábula: '🦊', poema: '🎵', leyenda: '🏰', novela: '📚', teatro: '🎭', ciencias: '🔬', sociales: '🌍', noticia: '📰', instrucciones: '🛠️', mito: '⚡', epopeya: '🛡️',
 };
 
-const ReadingModule: React.FC<ReadingModuleProps> = ({
-  userId,
-  childId,
-  childName,
-  grade,
-  onAwardPoints,
-  onActivityLog
-}) => {
-  const [textToRead, setTextToRead] = useState<string>(SAMPLE_TEXTS.primaria_baja[0].text);
-  const [selectedCategory, setSelectedCategory] = useState<string>("primaria_baja");
-  const [isRecording, setIsRecording] = useState<boolean>(false);
-  const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
-  const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const [loading, setLoading] = useState<boolean>(false);
-  const [analysis, setAnalysis] = useState<ReadingAnalysis | null>(null);
+const normalizeWord = (w: string) => w.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-zñ0-9]/g, '');
+
+// Reconocimiento de voz SOLO si el navegador lo hace dentro del dispositivo (la voz no sale a ningún servicio)
+async function onDeviceRecognitionAvailable(): Promise<boolean> {
+  const SR: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+  if (!SR || typeof SR.available !== 'function') return false;
+  try {
+    const st = await SR.available({ langs: ['es-ES'], processLocally: true });
+    return st === 'available';
+  } catch { return false; }
+}
+
+const blobToDataUrl = (b: Blob) => new Promise<string>((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(String(r.result)); r.onerror = reject; r.readAsDataURL(b); });
+
+type Phase = 'library' | 'reading' | 'confirm' | 'questions' | 'saving' | 'result';
+
+const ReadingModule: React.FC<ReadingModuleProps> = ({ childId, childName, grade, isDemo, onPoints, onDemoPoints, onActivityLog }) => {
+  const level = gradeLevel(grade);
+  const [phase, setPhase] = useState<Phase>('library');
+  const [list, setList] = useState<ReadingList | null>(null);
+  const [tab, setTab] = useState<'mine' | 'easier' | 'challenge'>('mine');
   const [error, setError] = useState<string | null>(null);
-  const [duration, setDuration] = useState<number>(0);
-  const [isPlayingModel, setIsPlayingModel] = useState<boolean>(false);
+  const [current, setCurrent] = useState<ReadingStart | null>(null);
+  const [moreLoading, setMoreLoading] = useState(false);
 
-  // Live Speech Recognition & Fluency Metrics
-  const [liveTranscript, setLiveTranscript] = useState<string>("");
-  const [recognizedWords, setRecognizedWords] = useState<Set<number>>(new Set());
-  const [liveWPM, setLiveWPM] = useState<number>(0);
-  const [pauseDetected, setPauseDetected] = useState<boolean>(false);
-  const [hasSpeechRecognition, setHasSpeechRecognition] = useState<boolean>(true);
-
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  // Lectura en voz alta
+  const [recordVoice, setRecordVoice] = useState(true);
+  const [isReading, setIsReading] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const [seconds, setSeconds] = useState(0);
+  const [micError, setMicError] = useState<string | null>(null);
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [tracking, setTracking] = useState<boolean>(false);
+  const [recognized, setRecognized] = useState<Set<number>>(new Set());
+  const [playingModel, setPlayingModel] = useState(false);
+  const startRef = useRef(0);
+  const timerRef = useRef<any>(null);
+  const recRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
-  const startTimeRef = useRef<number | null>(null);
-  const speechRecognizerRef = useRef<any>(null);
-  const lastSpeechTimeRef = useRef<number>(Date.now());
-  const pauseTimerRef = useRef<any>(null);
-  const timerIntervalRef = useRef<any>(null);
+  const audioBlobRef = useRef<Blob | null>(null);
+  const recognizerRef = useRef<any>(null);
 
-  // Check speech recognition support
-  useEffect(() => {
-    const SpeechClass = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    setHasSpeechRecognition(!!SpeechClass);
-  }, []);
+  // Preguntas y resultado
+  const [answers, setAnswers] = useState<number[]>([]);
+  const [showText, setShowText] = useState(false);
+  const [readWhole, setReadWhole] = useState(true);
+  const [result, setResult] = useState<ReadingResult | null>(null);
 
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      stopRecording();
-      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
-      if (pauseTimerRef.current) clearInterval(pauseTimerRef.current);
-      if (window.speechSynthesis) window.speechSynthesis.cancel();
-    };
-  }, []);
+  const loadList = () => {
+    if (isDemo) return;
+    readingService.list(childId).then(setList).catch((e) => setError(e.message));
+  };
+  useEffect(() => { loadList(); onDeviceRecognitionAvailable().then(setTracking); }, [childId, isDemo]);
+  useEffect(() => () => { stopAll(); window.speechSynthesis?.cancel(); }, []);
 
-  // Split target text into words for live alignment
-  const targetWords = textToRead.split(/\s+/).filter(Boolean);
+  // Modo demostración: biblioteca local, sin servidor
+  const demoTexts = useMemo(() => READING_LIBRARY.filter((t) => t.level === bandForLevel(level)).map((t) => ({
+    id: t.id, level: t.level, course: t.course, title: t.title, author: t.author, source: t.source, genre: t.genre, link: t.link, words: wordCount(t.text), timesRead: 0, bestComprehension: null,
+  })), [level]);
+  const reference: WpmReference = list?.reference || WPM_REFERENCE[level];
 
-  const normalizeWord = (w: string) =>
-    w.toLowerCase().replace(/[.,/#!$%^&*;:{}=\-_`~()¿?¡!]/g, "").trim();
+  const words = useMemo(() => (current ? current.text.text.split(/(\s+)/) : []), [current]);
+  const wordIdx = useMemo(() => { let n = -1; return words.map((w) => (/\S/.test(w) ? ++n : -1)); }, [words]);
 
-  // Read text with browser Text-To-Speech as a model
-  const handlePlayModelReading = () => {
-    if (!('speechSynthesis' in window)) return;
-    if (isPlayingModel) {
-      window.speechSynthesis.cancel();
-      setIsPlayingModel(false);
+  const open = async (t: TextCard) => {
+    setError(null); setResult(null); setAnswers([]); setShowText(false); setReadWhole(true); setSeconds(0); setElapsed(0); setRecognized(new Set());
+    if (audioUrl) URL.revokeObjectURL(audioUrl);
+    setAudioUrl(null); audioBlobRef.current = null; setMicError(null);
+    if (isDemo) {
+      const src = READING_LIBRARY.find((x) => x.id === t.id)!;
+      setCurrent({ attemptId: 'demo', text: { ...t, text: src.text }, questions: src.questions.map((q) => ({ type: q.type, label: QUESTION_LABELS[q.type], q: q.q, options: q.options })), reference });
+      setPhase('reading');
       return;
     }
-
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(textToRead);
-    utterance.lang = 'es-ES';
-    utterance.rate = 0.88; // slightly slower for instructional clarity
-    utterance.onend = () => setIsPlayingModel(false);
-    utterance.onerror = () => setIsPlayingModel(false);
-    setIsPlayingModel(true);
-    window.speechSynthesis.speak(utterance);
-  };
-
-  const startRecording = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream);
-      mediaRecorderRef.current = mediaRecorder;
-      chunksRef.current = [];
-      const now = Date.now();
-      startTimeRef.current = now;
-      lastSpeechTimeRef.current = now;
-      setDuration(0);
-      setLiveTranscript("");
-      setRecognizedWords(new Set());
-      setLiveWPM(0);
-      setPauseDetected(false);
-      setError(null);
-
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data);
-      };
-
-      mediaRecorder.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: 'audio/wav' });
-        setAudioBlob(blob);
-        setAudioUrl(URL.createObjectURL(blob));
-      };
-
-      mediaRecorder.start();
-      setIsRecording(true);
-
-      // Duration & WPM ticker
-      timerIntervalRef.current = setInterval(() => {
-        if (startTimeRef.current) {
-          const elapsedSec = Math.max(1, Math.floor((Date.now() - startTimeRef.current) / 1000));
-          setDuration(elapsedSec);
-        }
-      }, 500);
-
-      // Initialize live speech recognition if supported
-      const SpeechClass = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      if (SpeechClass) {
-        try {
-          const recognizer = new SpeechClass();
-          recognizer.continuous = true;
-          recognizer.interimResults = true;
-          recognizer.lang = 'es-ES';
-
-          recognizer.onresult = (event: any) => {
-            lastSpeechTimeRef.current = Date.now();
-            setPauseDetected(false);
-
-            let currentTranscript = '';
-            for (let i = 0; i < event.results.length; i++) {
-              currentTranscript += event.results[i][0].transcript + ' ';
-            }
-            setLiveTranscript(currentTranscript.trim());
-
-            // Match words against target text
-            const spokenTokens = currentTranscript.toLowerCase().split(/\s+/).map(normalizeWord);
-            const matched = new Set<number>();
-            let lastFoundIdx = -1;
-
-            spokenTokens.forEach((token) => {
-              for (let i = lastFoundIdx + 1; i < targetWords.length; i++) {
-                if (normalizeWord(targetWords[i]) === token) {
-                  matched.add(i);
-                  lastFoundIdx = i;
-                  break;
-                }
-              }
-            });
-
-            setRecognizedWords(matched);
-
-            // Calculate live Words Per Minute (WPM)
-            if (startTimeRef.current) {
-              const elapsedMinutes = (Date.now() - startTimeRef.current) / 60000;
-              if (elapsedMinutes > 0.05) {
-                const wpm = Math.round(matched.size / elapsedMinutes);
-                setLiveWPM(wpm);
-              }
-            }
-          };
-
-          recognizer.onerror = (err: any) => {
-            console.warn('[SpeechRecognition] Live tracking non-critical warning:', err.error);
-          };
-
-          recognizer.start();
-          speechRecognizerRef.current = recognizer;
-
-          // Pause detector: detect if silence exceeds 3.5s
-          pauseTimerRef.current = setInterval(() => {
-            if (isRecording && Date.now() - lastSpeechTimeRef.current > 3500) {
-              setPauseDetected(true);
-            }
-          }, 1000);
-        } catch (recErr) {
-          console.warn('Native speech recognition could not start:', recErr);
-        }
-      }
-    } catch (err) {
-      setError("No se pudo acceder al micrófono. Por favor, asegúrate de dar permisos.");
-      console.error(err);
-    }
+      setCurrent(await readingService.start(childId, t.id));
+      setPhase('reading');
+    } catch (e: any) { setError(e.message); }
   };
 
-  const stopRecording = () => {
-    if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
-    if (pauseTimerRef.current) clearInterval(pauseTimerRef.current);
+  const playModel = () => {
+    if (!current || !('speechSynthesis' in window)) return;
+    if (playingModel) { window.speechSynthesis.cancel(); setPlayingModel(false); return; }
+    const u = new SpeechSynthesisUtterance(current.text.text.replace(/\n+/g, '. '));
+    u.lang = 'es-ES'; u.rate = level <= 2 ? 0.8 : 0.92;
+    u.onend = () => setPlayingModel(false);
+    window.speechSynthesis.cancel(); window.speechSynthesis.speak(u); setPlayingModel(true);
+  };
 
-    if (speechRecognizerRef.current) {
+  const startReading = async () => {
+    window.speechSynthesis?.cancel(); setPlayingModel(false);
+    setMicError(null);
+    if (recordVoice) {
       try {
-        speechRecognizerRef.current.stop();
-      } catch {}
-      speechRecognizerRef.current = null;
-    }
-
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
-      setIsRecording(false);
-      mediaRecorderRef.current.stream.getTracks().forEach((track) => track.stop());
-      if (startTimeRef.current) {
-        setDuration(Math.max(1, Math.floor((Date.now() - startTimeRef.current) / 1000)));
-      }
-    }
-  };
-
-  const handleAnalyze = async () => {
-    if (!audioBlob && recognizedWords.size === 0) return;
-    setLoading(true);
-    setError(null);
-
-    const isOnline = offlineStorageService.getOnlineStatus();
-    const coveragePercent = Math.round((recognizedWords.size / Math.max(1, targetWords.length)) * 100);
-
-    try {
-      let result: ReadingAnalysis;
-
-      if (!isOnline || !audioBlob) {
-        // Offline / Local Evaluation Mode
-        const localScore = Math.min(10, Math.max(4, Math.round(coveragePercent / 10)));
-        result = {
-          score: localScore,
-          fluency: liveWPM > 0 ? `Ritmo de ${liveWPM} palabras por minuto. Buena continuidad.` : 'Lectura pausada y cuidadosa.',
-          intonation: 'Entonación adecuada con pausas reflexivas.',
-          accuracy: `Has leído correctamente el ${coveragePercent}% del texto.`,
-          comprehensionScore: localScore,
-          comprehensionFeedback: `Demuestras buena atención a las palabras del texto. ¡Sigue así!`,
-          generalFeedback: `¡Gran trabajo, ${childName}! Has completado la lectura en modo autónomo (${liveWPM || 45} PPM).`,
-          transcription: liveTranscript || textToRead,
-          suggestedExercises: [
-            {
-              title: "Lectura en eco",
-              description: "Vuelve a escuchar el modelo y lee justo después a la misma velocidad.",
-              text: textToRead,
-              difficulty: "fácil"
-            },
-            {
-              title: "Desafío de rapidez",
-              description: "Intenta leer el mismo párrafo mejorando tu tiempo en 5 segundos.",
-              text: textToRead,
-              difficulty: "medio"
-            }
-          ]
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'].find((m) => (window as any).MediaRecorder?.isTypeSupported?.(m));
+        const rec = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 32000 } : undefined);
+        chunksRef.current = [];
+        rec.ondataavailable = (e) => e.data.size && chunksRef.current.push(e.data);
+        rec.onstop = () => {
+          const blob = new Blob(chunksRef.current, { type: rec.mimeType || 'audio/webm' });
+          audioBlobRef.current = blob;
+          setAudioUrl(URL.createObjectURL(blob));
+          stream.getTracks().forEach((t) => t.stop());
         };
-      } else {
-        // Online Gemini multimodal audio evaluation
-        const base64Audio = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onloadend = () => {
-            const res = (reader.result as string).split(',')[1];
-            resolve(res);
-          };
-          reader.onerror = reject;
-          reader.readAsDataURL(audioBlob);
-        });
-
-        result = await readingService.analyzeReading(base64Audio, textToRead, grade);
+        rec.start();
+        recRef.current = rec;
+      } catch {
+        setMicError('No se ha podido usar el micrófono. Puedes leer igualmente: medimos el tiempo.');
       }
+    }
+    if (tracking && current) {
+      try {
+        const SR: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+        const r = new SR();
+        r.lang = 'es-ES'; r.continuous = true; r.interimResults = true; r.processLocally = true;
+        const target = current.text.text.split(/\s+/).filter(Boolean).map(normalizeWord);
+        r.onresult = (ev: any) => {
+          let said = '';
+          for (let i = 0; i < ev.results.length; i++) said += ev.results[i][0].transcript + ' ';
+          const tokens = said.split(/\s+/).map(normalizeWord).filter(Boolean);
+          const hit = new Set<number>(); let last = -1;
+          tokens.forEach((tk) => { for (let i = last + 1; i < Math.min(target.length, last + 6); i++) if (target[i] === tk) { hit.add(i); last = i; break; } });
+          setRecognized(hit);
+        };
+        r.onerror = () => {};
+        r.start();
+        recognizerRef.current = r;
+      } catch { /* sin seguimiento */ }
+    }
+    startRef.current = Date.now();
+    setIsReading(true);
+    clearInterval(timerRef.current);
+    timerRef.current = setInterval(() => setElapsed(Math.floor((Date.now() - startRef.current) / 1000)), 500);
+  };
 
-      setAnalysis(result);
+  const stopAll = () => {
+    clearInterval(timerRef.current);
+    try { if (recRef.current && recRef.current.state !== 'inactive') recRef.current.stop(); } catch { /* nada */ }
+    recRef.current = null;
+    try { recognizerRef.current?.stop(); } catch { /* nada */ }
+    recognizerRef.current = null;
+  };
 
-      // Prepare session payload
-      const sessionId = crypto.randomUUID();
-      const sessionData = {
-        id: sessionId,
-        userId,
-        childId,
-        audioUrl: audioUrl,
-        score: result.score,
-        analysis: result,
-        timestamp: Date.now(),
-        duration: duration || 10,
-        transcription: result.transcription || liveTranscript
-      };
+  const finishReading = () => {
+    const secs = Math.max(1, Math.round((Date.now() - startRef.current) / 1000));
+    stopAll();
+    setIsReading(false);
+    setSeconds(secs);
+    const wpm = (current?.text.words || 0) / (secs / 60);
+    // Si ha terminado demasiado pronto para el texto, le preguntamos si lo ha leído entero
+    setPhase(wpm > reference.max * 1.6 ? 'confirm' : 'questions');
+  };
 
-      // Save to server or queue if offline
-      if (isOnline) {
-        try {
-          await fetch(`api_study.php?action=save_reading_session&userId=${userId}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(sessionData)
-          });
-        } catch (e) {
-          console.warn('Error guardando en servidor, guardando en cola local:', e);
-          offlineStorageService.queueActivity('reading_session', `api_study.php?action=save_reading_session&userId=${userId}`, sessionData);
-        }
-      } else {
-        offlineStorageService.queueActivity('reading_session', `api_study.php?action=save_reading_session&userId=${userId}`, sessionData);
-      }
-
-      // Log for parent review
-      if (onActivityLog) {
-        onActivityLog(`Taller de Lectura: ${textToRead.substring(0, 30)}...`, "Lengua", {
-          text: result.generalFeedback,
-          type: 'reading_analysis',
-          score: result.score,
-          audio: audioUrl,
-          duration: duration,
-          transcription: result.transcription
-        });
-      }
-
-      // Award points & SRS review
-      if (result.score >= 7) {
-        onAwardPoints(25);
-      } else {
-        onAwardPoints(15);
-        await srsService.scheduleReviews(childId, `Lectura: ${textToRead.substring(0, 20)}...`, "Lengua", sessionId);
-      }
-    } catch (err) {
-      console.error('Error analizando lectura:', err);
-      setError("No se pudo completar el análisis completo online. Se ha guardado tu lectura en el historial local.");
-    } finally {
-      setLoading(false);
+  const submit = async () => {
+    if (!current) return;
+    setPhase('saving');
+    if (isDemo) {
+      const src = READING_LIBRARY.find((x) => x.id === current.text.id)!;
+      const detail = src.questions.map((q, i) => ({ type: q.type, label: QUESTION_LABELS[q.type], q: q.q, options: q.options, chosen: answers[i] ?? -1, correctIndex: q.correct, correct: answers[i] === q.correct, explanation: q.explanation }));
+      const correct = detail.filter((d) => d.correct).length;
+      const wpm = Math.round(current.text.words / (seconds / 60));
+      const band = wpm < reference.min ? 'below' : wpm > reference.max ? 'above' : 'within';
+      onDemoPoints?.(10 + correct * 5);
+      setResult({ recordId: 'demo', words: current.text.words, seconds, wpm, wpmBand: band, reference, counted: readWhole, correct, total: 4, detail, points: 10 + correct * 5, pointsCapReached: false, newPoints: 0, audioSaved: false, audioError: null });
+      setPhase('result');
+      return;
+    }
+    try {
+      const audio = recordVoice && audioBlobRef.current && audioBlobRef.current.size > 0 ? await blobToDataUrl(audioBlobRef.current) : null;
+      const total = current.text.text.split(/\s+/).filter(Boolean).length;
+      const r = await readingService.submit({
+        childId, attemptId: current.attemptId, seconds, answers, audio, readWhole,
+        trackingAccuracy: tracking && recognized.size ? Math.round((recognized.size / total) * 100) : null,
+      });
+      setResult(r);
+      onPoints(r.newPoints, r.points);
+      onActivityLog?.(`Lectura: ${current.text.title}`, 'Lengua', { type: 'reading', wpm: r.wpm, comprehension: `${r.correct}/${r.total}` });
+      setPhase('result');
+      loadList();
+    } catch (e: any) {
+      setError(e.message);
+      setPhase('questions');
     }
   };
 
-  const progressPercent = Math.round((recognizedWords.size / Math.max(1, targetWords.length)) * 100);
+  const more = async () => {
+    setMoreLoading(true); setError(null);
+    try { const { text } = await readingService.more(childId); loadList(); await open(text); }
+    catch (e: any) { setError(e.message); }
+    finally { setMoreLoading(false); }
+  };
 
-  return (
-    <div className="space-y-8 animate-in fade-in duration-500 pb-20">
-      <div className="bg-white rounded-[2.5rem] shadow-xl overflow-hidden border border-emerald-50">
-        {/* Banner Header */}
-        <div className="bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-700 p-8 text-white relative overflow-hidden">
-          <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-4">
-            <div>
-              <div className="flex items-center gap-2 mb-2">
-                <span className="bg-white/20 backdrop-blur-sm px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest">
-                  V.1.1.0 • Live Voice Tracking
-                </span>
-              </div>
-              <h2 className="text-3xl font-black mb-1 flex items-center gap-3">
-                📖 Taller de Lectura Guiada
-              </h2>
-              <p className="opacity-90 font-medium text-sm">
-                ¡Hola {childName}! Lee en voz alta. La aplicación detectará tu voz y ritmo en tiempo real.
-              </p>
-            </div>
+  const fontSize = level <= 2 ? 'text-2xl leading-loose' : level <= 4 ? 'text-xl leading-loose' : 'text-lg leading-relaxed';
+  const isPoem = current?.text.genre === 'poema' || current?.text.genre === 'teatro';
 
-            <button
-              onClick={handlePlayModelReading}
-              className={`px-4 py-2.5 rounded-2xl text-xs font-black flex items-center gap-2 transition-all shadow-md self-start md:self-auto ${
-                isPlayingModel
-                  ? 'bg-amber-400 text-amber-950 animate-pulse'
-                  : 'bg-white/15 hover:bg-white/25 text-white border border-white/20'
-              }`}
-            >
-              {isPlayingModel ? '⏹️ Detener audio' : '🔊 Escuchar Ejemplo'}
-            </button>
-          </div>
+  // ================================================================== BIBLIOTECA
+  if (phase === 'library') {
+    const cards = isDemo ? demoTexts : list ? (tab === 'mine' ? list.texts : tab === 'easier' ? list.easier : list.challenge) : [];
+    return (
+      <div className="space-y-6 pb-20 max-w-5xl mx-auto animate-in fade-in duration-500">
+        <div className="bg-gradient-to-r from-emerald-500 to-teal-600 rounded-[2.5rem] p-6 sm:p-8 text-white shadow-xl">
+          <h2 className="text-2xl sm:text-3xl font-black">📖 ¡A leer, {childName}!</h2>
+          <p className="opacity-90 text-sm mt-1">Lecturas de {reference.course}: cuentos, poemas y textos de lo que estudias en clase. Lee en voz alta, contesta 4 preguntas y mira cómo mejoras.</p>
+          <p className="text-xs font-black uppercase tracking-wider opacity-80 mt-3">En {reference.course} se suelen leer unas {reference.target} palabras por minuto</p>
+          {list && <p className="text-xs font-bold opacity-80 mt-1">⭐ Puntos por lecturas hoy: {list.pointsToday} de {list.pointsCap}</p>}
         </div>
-
-        <div className="p-8 space-y-8">
-          {/* Level & Text Selector */}
-          <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 pb-4">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-black text-slate-500 uppercase tracking-wider">Nivel:</span>
-              <div className="flex bg-slate-100 p-1 rounded-xl">
-                <button
-                  onClick={() => {
-                    setSelectedCategory('primaria_baja');
-                    setTextToRead(SAMPLE_TEXTS.primaria_baja[0].text);
-                    setAnalysis(null);
-                    setAudioUrl(null);
-                  }}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                    selectedCategory === 'primaria_baja' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500'
-                  }`}
-                >
-                  1º-2º Primaria
-                </button>
-                <button
-                  onClick={() => {
-                    setSelectedCategory('primaria_media');
-                    setTextToRead(SAMPLE_TEXTS.primaria_media[0].text);
-                    setAnalysis(null);
-                    setAudioUrl(null);
-                  }}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                    selectedCategory === 'primaria_media' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500'
-                  }`}
-                >
-                  3º-4º Primaria
-                </button>
-                <button
-                  onClick={() => {
-                    setSelectedCategory('primaria_alta');
-                    setTextToRead(SAMPLE_TEXTS.primaria_alta[0].text);
-                    setAnalysis(null);
-                    setAudioUrl(null);
-                  }}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                    selectedCategory === 'primaria_alta' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500'
-                  }`}
-                >
-                  5º-6º Primaria
-                </button>
+        {error && <p role="alert" className="text-sm font-bold text-rose-600 bg-rose-50 rounded-2xl px-4 py-3">{error}</p>}
+        {!isDemo && (
+          <div className="flex flex-wrap gap-2" role="tablist" aria-label="Nivel de las lecturas">
+            {([['mine', `📘 Mi curso`], ['easier', '🌱 Más fáciles'], ['challenge', '🚀 Un reto']] as const).map(([id, label]) => (
+              <button key={id} role="tab" aria-selected={tab === id} onClick={() => setTab(id)}
+                className={`px-4 py-2 rounded-xl text-sm font-black border-2 ${tab === id ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-emerald-700 border-emerald-100'}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+        {!isDemo && !list && !error && <p className="text-emerald-500 font-bold animate-pulse">Cargando lecturas…</p>}
+        {isDemo && <p className="text-sm font-bold text-amber-700 bg-amber-50 rounded-2xl px-4 py-3">Modo demostración: puedes probar las lecturas, pero no se guardan ni se graba la voz.</p>}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4" data-testid="reading-list">
+          {cards.map((t) => (
+            <button key={t.id} onClick={() => open(t)} className="text-left bg-white rounded-[2rem] p-6 border-2 border-transparent hover:border-emerald-400 shadow-sm hover:shadow-lg transition-all">
+              <div className="flex items-start justify-between gap-3">
+                <span className="text-3xl" aria-hidden="true">{GENRE_ICON[t.genre] || '📖'}</span>
+                {t.timesRead > 0 && <span className="text-[10px] font-black bg-emerald-50 text-emerald-700 px-2 py-1 rounded-full">✓ Leída{t.bestComprehension !== null ? ` · ${Math.round((t.bestComprehension / 100) * 4)}/4` : ''}</span>}
               </div>
-            </div>
-
-            <button
-              onClick={() => {
-                const list = SAMPLE_TEXTS[selectedCategory] || SAMPLE_TEXTS.primaria_baja;
-                const nextIdx = (list.findIndex((t) => t.text === textToRead) + 1) % list.length;
-                setTextToRead(list[nextIdx].text);
-                setAnalysis(null);
-                setAudioUrl(null);
-                setRecognizedWords(new Set());
-              }}
-              className="text-xs font-black text-emerald-600 hover:text-emerald-700 flex items-center gap-1.5 transition"
-            >
-              🔄 Otro texto de este nivel
+              <h3 className="text-lg font-black text-emerald-900 mt-2">{t.title}</h3>
+              <p className="text-xs font-bold text-emerald-600">{t.author}</p>
+              <p className="text-xs text-slate-400 mt-1">{t.link} · {t.words} palabras</p>
             </button>
+          ))}
+        </div>
+        {list?.allRead && tab === 'mine' && (
+          <button onClick={more} disabled={moreLoading} className="bg-emerald-600 text-white px-6 py-3 rounded-2xl font-black shadow-lg disabled:opacity-50">
+            {moreLoading ? 'Preparando una lectura nueva…' : '✨ ¡Las has leído todas! Quiero una lectura nueva'}
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  if (!current) return null;
+
+  // ================================================================== LEER
+  if (phase === 'reading') {
+    return (
+      <div className="space-y-6 pb-20 max-w-4xl mx-auto">
+        <button onClick={() => { stopAll(); setIsReading(false); setPhase('library'); }} className="text-sm font-black text-emerald-600">← Volver a las lecturas</button>
+        <article className="bg-white rounded-[2.5rem] p-6 sm:p-10 shadow-xl border border-emerald-50">
+          <p className="text-xs font-black text-emerald-500 uppercase tracking-wider">{current.text.link}</p>
+          <h2 className="text-3xl font-black text-emerald-900 mt-1">{current.text.title}</h2>
+          <p className="text-sm font-bold text-slate-400 mb-6">{current.text.author} · {current.text.source}</p>
+          <div className={`${fontSize} text-slate-800 ${isPoem ? 'whitespace-pre-line' : ''}`} data-testid="reading-text">
+            {words.map((w, i) => (wordIdx[i] < 0 ? <React.Fragment key={i}>{w}</React.Fragment> :
+              <span key={i} className={recognized.has(wordIdx[i]) ? 'bg-emerald-100 rounded' : ''}>{w}</span>))}
           </div>
-
-          {/* Interactive Live Reading Card */}
-          <div className="bg-emerald-50/70 p-8 rounded-[2rem] border-2 border-emerald-100 relative">
-            <div className="flex items-center justify-between mb-4">
-              <span className="bg-emerald-600 text-white px-4 py-1 rounded-full text-[10px] font-black uppercase tracking-widest">
-                Texto para leer
-              </span>
-
-              {isRecording && (
-                <div className="flex items-center gap-3">
-                  <span className="bg-emerald-100 text-emerald-800 text-[11px] font-black px-3 py-1 rounded-full flex items-center gap-1.5">
-                    ⏱️ {duration}s • {liveWPM} PPM
-                  </span>
-                  <span className="bg-teal-100 text-teal-800 text-[11px] font-black px-3 py-1 rounded-full">
-                    {progressPercent}% completado
-                  </span>
-                </div>
+        </article>
+        <div className="bg-white rounded-[2rem] p-6 border border-emerald-50 space-y-4">
+          {!isReading ? (
+            <>
+              <div className="flex flex-wrap gap-3">
+                <button onClick={playModel} className="bg-emerald-50 text-emerald-800 px-5 py-3 rounded-2xl font-black">{playingModel ? '⏹️ Parar' : '🔊 Escuchar cómo se lee'}</button>
+                <button onClick={startReading} className="bg-emerald-600 text-white px-8 py-3 rounded-2xl font-black shadow-lg">🎙️ Empiezo a leer</button>
+              </div>
+              {!isDemo && (
+                <label className="flex items-center gap-3 text-sm font-bold text-emerald-900">
+                  <input type="checkbox" checked={recordVoice} onChange={(e) => setRecordVoice(e.target.checked)} className="w-5 h-5" />
+                  Grabar mi voz para que la escuchen mis padres
+                </label>
               )}
-            </div>
-
-            {/* Live Word Highlighting */}
-            <p className="text-2xl font-serif leading-loose text-slate-800">
-              {targetWords.map((word, idx) => {
-                const isRead = recognizedWords.has(idx);
-                return (
-                  <span
-                    key={idx}
-                    className={`inline-block px-1.5 py-0.5 rounded-lg transition-all duration-200 mr-1.5 mb-1 ${
-                      isRead
-                        ? 'bg-emerald-300/80 text-emerald-950 font-bold shadow-sm'
-                        : isRecording
-                        ? 'text-slate-700'
-                        : 'text-slate-800'
-                    }`}
-                  >
-                    {word}
-                  </span>
-                );
-              })}
-            </p>
-
-            {/* Pause gentle encouragement */}
-            {pauseDetected && isRecording && (
-              <div className="mt-4 p-3 bg-amber-100/90 text-amber-900 rounded-2xl text-xs font-bold flex items-center gap-2 animate-in fade-in">
-                <span>🌟</span>
-                <span>¡Vas fenomenal, {childName}! Respira hondo y continúa cuando quieras.</span>
-              </div>
-            )}
-          </div>
-
-          {/* Microphone & Recording Controls */}
-          <div className="flex flex-col items-center gap-6">
-            {!audioUrl ? (
-              <div className="flex flex-col items-center gap-3">
-                <button
-                  id="reading-record-toggle-btn"
-                  onClick={isRecording ? stopRecording : startRecording}
-                  className={`w-24 h-24 rounded-full flex items-center justify-center text-3xl shadow-xl transition-all active:scale-95 ${
-                    isRecording
-                      ? 'bg-rose-500 animate-pulse text-white ring-8 ring-rose-200'
-                      : 'bg-emerald-600 text-white hover:bg-emerald-500 hover:shadow-emerald-200'
-                  }`}
-                  title={isRecording ? 'Pulsa para terminar de leer' : 'Pulsa para empezar a leer'}
-                >
-                  {isRecording ? '⏹️' : '🎤'}
-                </button>
-                <span className="text-xs font-black text-slate-600">
-                  {isRecording ? 'GRABANDO Y ESCUCHANDO... ¡PULSA PARA PARAR!' : 'PULSA PARA EMPEZAR A LEER'}
-                </span>
-              </div>
-            ) : (
-              <div className="w-full space-y-4">
-                <audio src={audioUrl} controls className="w-full" />
-                <div className="flex gap-4">
-                  <button
-                    onClick={() => {
-                      setAudioUrl(null);
-                      setAudioBlob(null);
-                      setAnalysis(null);
-                      setRecognizedWords(new Set());
-                      setLiveWPM(0);
-                    }}
-                    className="flex-1 py-4 bg-slate-100 text-slate-700 rounded-2xl font-bold hover:bg-slate-200 transition-all"
-                  >
-                    🔄 Repetir Lectura
-                  </button>
-                  {!analysis && (
-                    <button
-                      onClick={handleAnalyze}
-                      disabled={loading}
-                      className="flex-1 py-4 bg-emerald-600 text-white rounded-2xl font-black shadow-lg hover:bg-emerald-500 transition-all disabled:opacity-50"
-                    >
-                      {loading ? 'Analizando con IA...' : '🔍 Analizar y Evaluar Lectura'}
-                    </button>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-
-          {error && (
-            <div className="bg-red-50 text-red-600 p-4 rounded-2xl text-center font-bold text-xs">
-              {error}
+              <p className="text-xs text-slate-400">Pulsa «Empiezo a leer», lee el texto en voz alta y pulsa «He terminado». {tracking ? 'Las palabras se irán iluminando mientras lees (tu voz se reconoce dentro de este dispositivo).' : ''}</p>
+            </>
+          ) : (
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <span className="text-lg font-black text-emerald-700" aria-live="off">⏱️ {elapsed} s {recRef.current ? '· 🔴 grabando' : ''}</span>
+              <button onClick={finishReading} className="bg-rose-500 text-white px-8 py-3 rounded-2xl font-black shadow-lg">✋ He terminado</button>
             </div>
           )}
-
-          {/* Analysis Results Display */}
-          {analysis && (
-            <div className="space-y-8 animate-in slide-in-from-bottom-8 duration-700 pt-6 border-t border-slate-100">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div className="bg-gradient-to-br from-emerald-500 to-teal-600 text-white p-6 rounded-[2rem] text-center shadow-lg">
-                  <div className="text-5xl font-black mb-1">{analysis.score}/10</div>
-                  <div className="text-[10px] font-black uppercase tracking-widest text-emerald-100">
-                    Puntuación Global
-                  </div>
-                  {liveWPM > 0 && (
-                    <div className="mt-3 text-xs bg-white/20 py-1 px-3 rounded-full font-bold">
-                      🚀 {liveWPM} Palabras / min
-                    </div>
-                  )}
-                </div>
-                <div className="md:col-span-2 bg-teal-50/80 p-6 rounded-[2rem] border border-teal-100 flex flex-col justify-center">
-                  <h4 className="font-black text-teal-950 mb-2 flex items-center gap-2">
-                    <span>✨</span> Retroalimentación Pedagógica
-                  </h4>
-                  <p className="text-teal-900 italic leading-relaxed text-sm">
-                    "{analysis.generalFeedback}"
-                  </p>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="space-y-4">
-                  <h4 className="font-black text-slate-800 flex items-center gap-2">
-                    <span className="w-2.5 h-6 bg-emerald-500 rounded-full"></span>
-                    Fluidez y Pronunciación
-                  </h4>
-                  <div className="space-y-3">
-                    <div className="bg-white border border-slate-100 p-4 rounded-2xl shadow-sm">
-                      <span className="text-[10px] font-black text-emerald-600 uppercase">Fluidez</span>
-                      <p className="text-xs text-slate-700 font-medium mt-1">{analysis.fluency}</p>
-                    </div>
-                    <div className="bg-white border border-slate-100 p-4 rounded-2xl shadow-sm">
-                      <span className="text-[10px] font-black text-teal-600 uppercase">Entonación</span>
-                      <p className="text-xs text-slate-700 font-medium mt-1">{analysis.intonation}</p>
-                    </div>
-                    <div className="bg-white border border-slate-100 p-4 rounded-2xl shadow-sm">
-                      <span className="text-[10px] font-black text-cyan-600 uppercase">Precisión</span>
-                      <p className="text-xs text-slate-700 font-medium mt-1">{analysis.accuracy}</p>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="space-y-4">
-                  <h4 className="font-black text-slate-800 flex items-center gap-2">
-                    <span className="w-2.5 h-6 bg-amber-500 rounded-full"></span>
-                    Comprensión del Texto
-                  </h4>
-                  <div className="bg-amber-50/80 p-6 rounded-[2rem] border border-amber-100">
-                    <div className="flex items-center gap-4 mb-4">
-                      <div className="text-3xl font-black text-amber-600">
-                        {analysis.comprehensionScore}/10
-                      </div>
-                      <div className="h-2.5 flex-1 bg-amber-200 rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-amber-500 transition-all duration-1000"
-                          style={{ width: `${analysis.comprehensionScore * 10}%` }}
-                        ></div>
-                      </div>
-                    </div>
-                    <p className="text-xs text-amber-900 leading-relaxed italic">
-                      {analysis.comprehensionFeedback}
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              {analysis.suggestedExercises && analysis.suggestedExercises.length > 0 && (
-                <div className="space-y-4">
-                  <h4 className="font-black text-slate-800 flex items-center gap-2">
-                    <span className="w-2.5 h-6 bg-indigo-500 rounded-full"></span>
-                    Retos Recomendados para la Próxima Vez
-                  </h4>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {analysis.suggestedExercises.map((ex, i) => (
-                      <div
-                        key={i}
-                        className="bg-white border border-slate-100 p-5 rounded-2xl shadow-sm hover:border-emerald-200 transition-all"
-                      >
-                        <div className="flex justify-between items-start mb-2">
-                          <h5 className="font-black text-slate-800 text-sm">{ex.title}</h5>
-                          <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700">
-                            {ex.difficulty}
-                          </span>
-                        </div>
-                        <p className="text-xs text-slate-600 leading-relaxed">{ex.description}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
+          {micError && <p role="status" className="text-sm font-bold text-amber-700">{micError}</p>}
         </div>
       </div>
-    </div>
-  );
+    );
+  }
+
+  // ================================================================== ¿LO HAS LEÍDO ENTERO?
+  if (phase === 'confirm') {
+    return (
+      <div className="max-w-xl mx-auto bg-white rounded-[2.5rem] p-8 shadow-xl text-center space-y-4" role="dialog" aria-labelledby="confirm-title">
+        <div className="text-5xl" aria-hidden="true">🤔</div>
+        <h2 id="confirm-title" className="text-2xl font-black text-emerald-900">¡Qué rápido! ¿Lo has leído entero?</h2>
+        <p className="text-sm text-slate-500">Has tardado {seconds} segundos en {current.text.words} palabras.</p>
+        <div className="flex flex-wrap justify-center gap-3">
+          <button onClick={() => { setReadWhole(true); setPhase('questions'); }} className="bg-emerald-600 text-white px-6 py-3 rounded-2xl font-black">Sí, entero</button>
+          <button onClick={() => { setReadWhole(false); setPhase('questions'); }} className="bg-emerald-50 text-emerald-800 px-6 py-3 rounded-2xl font-black">No, me he saltado partes</button>
+          <button onClick={() => { setPhase('reading'); setElapsed(0); }} className="text-emerald-600 px-6 py-3 rounded-2xl font-black">Volver a leer</button>
+        </div>
+      </div>
+    );
+  }
+
+  // ================================================================== PREGUNTAS
+  if (phase === 'questions' || phase === 'saving') {
+    const done = current.questions.every((_, i) => answers[i] !== undefined);
+    return (
+      <div className="space-y-6 pb-20 max-w-4xl mx-auto">
+        <div className="bg-white rounded-[2.5rem] p-6 sm:p-8 shadow-xl border border-emerald-50 space-y-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="text-2xl font-black text-emerald-900">¿Lo has entendido?</h2>
+            <button onClick={() => setShowText(!showText)} className="text-sm font-black text-emerald-600">{showText ? 'Ocultar el texto' : '👀 Volver a mirar el texto'}</button>
+          </div>
+          {showText && <div className={`bg-emerald-50/50 rounded-2xl p-4 text-slate-700 ${isPoem ? 'whitespace-pre-line' : ''}`}>{current.text.text}</div>}
+          {audioUrl && <div className="text-sm text-emerald-800 font-bold flex flex-wrap items-center gap-3">🎧 Escúchate: <audio controls src={audioUrl} className="h-10" /></div>}
+          {current.questions.map((q, i) => (
+            <fieldset key={i} className="space-y-2">
+              <legend className="font-black text-emerald-900"><span className="text-[10px] font-black uppercase tracking-wider text-emerald-400 block">{q.label}</span>{i + 1}. {q.q}</legend>
+              <div className="grid sm:grid-cols-2 gap-2">
+                {q.options.map((o, j) => (
+                  <label key={j} className={`flex items-center gap-3 p-3 rounded-xl border-2 cursor-pointer text-sm font-bold ${answers[i] === j ? 'border-emerald-500 bg-emerald-50 text-emerald-900' : 'border-slate-100 text-slate-700 hover:border-emerald-200'}`}>
+                    <input type="radio" name={`q${i}`} checked={answers[i] === j} onChange={() => { const a = [...answers]; a[i] = j; setAnswers(a); }} className="w-4 h-4" />
+                    {o}
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          ))}
+          {error && <p role="alert" className="text-sm font-bold text-rose-600">{error}</p>}
+          <button onClick={submit} disabled={!done || phase === 'saving'} className="bg-emerald-600 text-white px-8 py-4 rounded-2xl font-black shadow-lg disabled:opacity-40">
+            {phase === 'saving' ? 'Guardando…' : 'Comprobar'}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ================================================================== RESULTADO
+  if (phase === 'result' && result) {
+    return (
+      <div className="space-y-6 pb-20 max-w-4xl mx-auto" data-testid="reading-result">
+        <div className="bg-white rounded-[2.5rem] p-8 shadow-xl border-t-8 border-emerald-500 text-center space-y-4">
+          <div className="text-5xl" aria-hidden="true">{result.correct === result.total ? '🌟' : result.correct >= 2 ? '👏' : '📚'}</div>
+          <h2 className="text-3xl font-black text-emerald-900">{current.text.title}</h2>
+          <div className="flex flex-wrap justify-center gap-4">
+            <div className="bg-emerald-50 px-6 py-4 rounded-3xl"><p className="text-xs font-black text-emerald-500 uppercase">Comprensión</p><p className="text-4xl font-black text-emerald-700" data-testid="reading-comprehension">{result.correct}/{result.total}</p></div>
+            <div className="bg-sky-50 px-6 py-4 rounded-3xl"><p className="text-xs font-black text-sky-500 uppercase">Palabras por minuto</p><p className="text-4xl font-black text-sky-700" data-testid="reading-wpm">{result.counted ? result.wpm : '—'}</p></div>
+            <div className="bg-amber-50 px-6 py-4 rounded-3xl"><p className="text-xs font-black text-amber-500 uppercase">Puntos</p><p className="text-4xl font-black text-amber-600">+{result.points}</p></div>
+          </div>
+          {result.counted
+            ? <p className="text-sm font-bold text-sky-800 bg-sky-50 rounded-2xl px-4 py-3 inline-block" data-testid="wpm-message">{wpmMessage(result.wpmBand, result.reference)}</p>
+            : <p className="text-sm font-bold text-slate-500">Esta vez no contamos la velocidad. La próxima, lee el texto entero en voz alta.</p>}
+          {result.audioSaved && <p className="text-xs font-bold text-emerald-600">🎙️ Tu lectura se ha guardado para que la escuchen tus padres.</p>}
+          {result.audioError && <p className="text-xs font-bold text-amber-600">No se ha podido guardar la grabación ({result.audioError}).</p>}
+          {result.pointsCapReached && <p className="text-xs font-bold text-amber-700">Hoy ya has llegado al máximo de puntos por lecturas. ¡Pero leer siempre suma!</p>}
+        </div>
+        <div className="bg-white rounded-[2rem] p-6 border border-emerald-50 space-y-3">
+          <h3 className="font-black text-emerald-900">Tus respuestas</h3>
+          {result.detail.map((d, i) => (
+            <div key={i} className={`rounded-2xl p-4 border ${d.correct ? 'border-green-100 bg-green-50/40' : 'border-rose-100 bg-rose-50/40'}`}>
+              <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">{d.label}</p>
+              <p className="text-sm font-bold text-emerald-900">{d.correct ? '✅' : '❌'} {d.q}</p>
+              {!d.correct && <p className="text-xs text-rose-700 mt-1">La respuesta era: <strong>{d.options[d.correctIndex]}</strong></p>}
+              <p className="text-xs text-slate-600 mt-1">💡 {d.explanation}</p>
+            </div>
+          ))}
+        </div>
+        <div className="flex flex-wrap justify-center gap-3">
+          <button onClick={() => setPhase('library')} className="bg-emerald-600 text-white px-8 py-4 rounded-2xl font-black shadow-lg">Otra lectura</button>
+          <button onClick={() => open(current.text)} className="bg-emerald-50 text-emerald-800 px-8 py-4 rounded-2xl font-black">Volver a leer esta</button>
+        </div>
+      </div>
+    );
+  }
+  return null;
 };
 
 export default ReadingModule;

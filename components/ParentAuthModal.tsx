@@ -1,36 +1,55 @@
-
 import React, { useState } from 'react';
+import { authService } from '../services/authService';
 
 interface ParentAuthModalProps {
-  correctPin: string;
   onResult: (success: boolean) => void;
   onCancel: () => void;
+  /** Texto opcional que explica para qué se pide el PIN */
+  reason?: string;
 }
 
-const ParentAuthModal: React.FC<ParentAuthModalProps> = ({ correctPin, onResult, onCancel }) => {
+// El PIN se comprueba en el servidor: no hay copia del PIN en el dispositivo.
+const ParentAuthModal: React.FC<ParentAuthModalProps> = ({ onResult, onCancel, reason }) => {
   const [pin, setPin] = useState('');
   const [error, setError] = useState(false);
+  const [message, setMessage] = useState('');
+  const [checking, setChecking] = useState(false);
+  const [locked, setLocked] = useState(false);
+
+  const submit = async (candidate: string) => {
+    setChecking(true);
+    const res = await authService.verifyPin(candidate);
+    setChecking(false);
+    if (res.success) {
+      onResult(true);
+      return;
+    }
+    setError(true);
+    if (res.code === 'PIN_LOCKED') {
+      setLocked(true);
+      setMessage(res.error || 'Demasiados intentos. Espera unos minutos.');
+    } else if (res.code === 'PIN_WRONG') {
+      setMessage(res.attemptsLeft !== undefined && res.attemptsLeft <= 2
+        ? `PIN incorrecto. Te quedan ${res.attemptsLeft} intento${res.attemptsLeft === 1 ? '' : 's'}.`
+        : 'PIN incorrecto.');
+    } else {
+      setMessage(res.error || 'No se ha podido comprobar el PIN.');
+    }
+    setTimeout(() => {
+      setPin('');
+      setError(false);
+    }, 800);
+  };
 
   const handleKeyClick = (key: string) => {
-    if (pin.length < 4) {
-      const newPin = pin + key;
-      setPin(newPin);
-      
-      if (newPin.length === 4) {
-        if (newPin === correctPin) {
-          onResult(true);
-        } else {
-          setError(true);
-          setTimeout(() => {
-            setPin('');
-            setError(false);
-          }, 800);
-        }
-      }
-    }
+    if (checking || locked || pin.length >= 4) return;
+    const newPin = pin + key;
+    setPin(newPin);
+    if (newPin.length === 4) submit(newPin);
   };
 
   const handleBackspace = () => {
+    if (checking) return;
     setPin(pin.slice(0, -1));
   };
 
@@ -42,7 +61,11 @@ const ParentAuthModal: React.FC<ParentAuthModalProps> = ({ correctPin, onResult,
             <span className="text-2xl">🔐</span>
           </div>
           <h2 className="text-2xl font-bold text-blue-900">Control Parental</h2>
-          <p className="text-blue-500 text-sm mt-1">Introduce tu PIN de tutor</p>
+          <p className="text-blue-500 text-sm mt-1">{reason || 'Introduce tu PIN de tutor'}</p>
+          {message && (
+            <p className={`text-xs font-bold mt-3 ${locked ? 'text-red-600' : 'text-red-500'}`} role="alert">{message}</p>
+          )}
+          {checking && <p className="text-xs font-bold mt-3 text-blue-400">Comprobando…</p>}
         </div>
 
         <div className="flex justify-center gap-4 mb-8">

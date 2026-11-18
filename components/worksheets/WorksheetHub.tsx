@@ -1,3 +1,4 @@
+import ReportErrorButton from '../ReportErrorButton';
 import React, { useState, useEffect } from 'react';
 import { Child } from '../../types';
 import { Book } from '../../types/study';
@@ -8,6 +9,7 @@ import { PrintableWorksheetView } from './PrintableWorksheetView';
 import { WorksheetScannerModal } from './WorksheetScannerModal';
 import { HomeworkScannerModal } from './HomeworkScannerModal';
 import { RemedialGuidePrintView } from './RemedialGuidePrintView';
+import { fileToDataUrl, readWorksheetQr } from '../../services/imageUtils';
 
 interface WorksheetHubProps {
   childrenList: Child[];
@@ -17,6 +19,13 @@ interface WorksheetHubProps {
   isParentUnlocked?: boolean;
   onRequireParentPin?: () => void;
   onAwardPoints?: (childId: string, points: number) => void;
+  /** Modo demostración: sin servidor */
+  isDemo?: boolean;
+  /** "No sé hacer este ejercicio": abre Pregúntame con la foto */
+  onAskTutorWithPhoto?: (image: string) => void;
+  /** Llega desde otro módulo (p. ej. Mates): abrir "Hago una foto", corregir una imagen ya hecha o filtrar por asignatura */
+  intent?: { openPhoto?: boolean; homeworkImage?: string; subject?: string } | null;
+  onIntentConsumed?: () => void;
 }
 
 export const WorksheetHub: React.FC<WorksheetHubProps> = ({
@@ -27,6 +36,10 @@ export const WorksheetHub: React.FC<WorksheetHubProps> = ({
   isParentUnlocked = false,
   onRequireParentPin,
   onAwardPoints,
+  isDemo = false,
+  onAskTutorWithPhoto,
+  intent,
+  onIntentConsumed,
 }) => {
   const [activeTab, setActiveTab] = useState<'worksheets' | 'homework'>('worksheets');
   const [worksheets, setWorksheets] = useState<PrintableWorksheet[]>([]);
@@ -43,20 +56,86 @@ export const WorksheetHub: React.FC<WorksheetHubProps> = ({
   const [tutorCommentInput, setTutorCommentInput] = useState('');
   const [tutorStickerInput, setTutorStickerInput] = useState('🌟');
   const [bonusPointsInput, setBonusPointsInput] = useState(15);
+  // Botón único "Hago una foto"
+  const [photoChooser, setPhotoChooser] = useState<null | 'choose' | 'correct' | 'help'>(null);
+  const photoIntentRef = React.useRef<'correct' | 'help'>('correct');
+  const [flowImage, setFlowImage] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const photoInputRef = React.useRef<HTMLInputElement>(null);
+  const [subjectFilter, setSubjectFilter] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!intent) return;
+    if (intent.subject) setSubjectFilter(intent.subject);
+    if (intent.homeworkImage && !isDemo) {
+      setFlowImage(intent.homeworkImage);
+      setIsHomeworkModalOpen(true);
+    } else if (intent.openPhoto) {
+      openPhotoFlow();
+    }
+    onIntentConsumed?.();
+  }, [intent]);
 
   // Determinar si el usuario navega como alumno o como padre
   const isStudent = userRole === 'student' || (!isParentUnlocked && userRole !== 'parent' && userRole !== 'demo');
   const studentChildId = activeChildId || childrenList[0]?.id;
   const currentStudent = childrenList.find((c) => c.id === studentChildId) || childrenList[0];
 
-  const loadData = () => {
-    setWorksheets(worksheetService.getWorksheets());
-    setHomeworkRecords(worksheetService.getHomeworkRecords());
+  const loadData = async () => {
+    if (isDemo) return;
+    setLoading(true);
+    try {
+      const data = await worksheetService.load(isStudent ? studentChildId : undefined);
+      setWorksheets(data.worksheets);
+      setHomeworkRecords(data.homework);
+    } catch (e: any) {
+      setNotice(e?.message || 'No se han podido cargar las fichas.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
     loadData();
-  }, []);
+  }, [isStudent, studentChildId, isDemo]);
+
+  const openPhotoFlow = () =>
+    isDemo
+      ? setNotice('En el modo demostración no se pueden corregir fotos. Crea una cuenta para probarlo.')
+      : setPhotoChooser('choose');
+
+  const pickPhoto = (intent: 'correct' | 'help') => {
+    photoIntentRef.current = intent;
+    setPhotoChooser(null);
+    photoInputRef.current?.click();
+  };
+
+  // Foto elegida en "Hago una foto": decide si es una ficha de EduAmigo (por su QR) o deberes del cole
+  const handlePhotoPicked = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      if (photoIntentRef.current === 'help') {
+        onAskTutorWithPhoto?.(dataUrl);
+        return;
+      }
+      const qrId = await readWorksheetQr(dataUrl);
+      const ws = qrId ? worksheets.find((w) => w.id === qrId) : null;
+      setFlowImage(dataUrl);
+      if (ws) {
+        setNotice(`He reconocido la ficha "${ws.topic}" por su código QR.`);
+        setScanningWorksheet(ws);
+      } else {
+        if (qrId) setNotice('Esa ficha no es de este perfil: la corrijo como deberes.');
+        setIsHomeworkModalOpen(true);
+      }
+    } catch (err: any) {
+      setNotice(err?.message || 'No se ha podido abrir la foto.');
+    }
+  };
 
   const handleWorksheetGenerated = (ws: PrintableWorksheet) => {
     loadData();
@@ -64,10 +143,10 @@ export const WorksheetHub: React.FC<WorksheetHubProps> = ({
     setSelectedWorksheet(ws);
   };
 
-  const handleHomeworkComplete = (record: ScannedHomeworkRecord) => {
+  // La ventana de deberes se queda abierta para que el niño vea en qué ha fallado y las pistas;
+  // desde ahí puede abrir la guía explicativa o la ficha de refuerzo.
+  const handleHomeworkComplete = (_record: ScannedHomeworkRecord) => {
     loadData();
-    setIsHomeworkModalOpen(false);
-    setSelectedHomework(record);
   };
 
   const handleCorrectionComplete = (ws: PrintableWorksheet, correction: WorksheetCorrection) => {
@@ -83,8 +162,7 @@ export const WorksheetHub: React.FC<WorksheetHubProps> = ({
   const handleDeleteWorksheet = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (confirm('¿Deseas eliminar esta ficha de repaso?')) {
-      worksheetService.deleteWorksheet(id);
-      loadData();
+      worksheetService.deleteWorksheet(id).then(loadData).catch((err) => setNotice(err.message));
       if (selectedWorksheet?.id === id) {
         setSelectedWorksheet(null);
       }
@@ -94,21 +172,25 @@ export const WorksheetHub: React.FC<WorksheetHubProps> = ({
   const handleDeleteHomework = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (confirm('¿Deseas eliminar este registro de deberes corregidos?')) {
-      worksheetService.deleteHomeworkRecord(id);
-      loadData();
+      worksheetService.deleteHomeworkRecord(id).then(loadData).catch((err) => setNotice(err.message));
       if (selectedHomework?.id === id) {
         setSelectedHomework(null);
       }
     }
   };
 
-  const handleSaveTutorFeedback = () => {
+  const handleSaveTutorFeedback = async () => {
     if (!reviewingHomework) return;
-    worksheetService.saveTutorFeedback(reviewingHomework.id, {
-      tutorComment: tutorCommentInput || '¡Excelente trabajo y dedicación en tus tareas!',
-      tutorSticker: tutorStickerInput,
-      bonusPoints: bonusPointsInput,
-    });
+    try {
+      await worksheetService.saveTutorFeedback(reviewingHomework.id, {
+        tutorComment: tutorCommentInput || '¡Excelente trabajo y dedicación en tus tareas!',
+        tutorSticker: tutorStickerInput,
+        bonusPoints: bonusPointsInput,
+      });
+    } catch (err: any) {
+      setNotice(err?.message || 'No se ha podido guardar el comentario.');
+      return;
+    }
     if (onAwardPoints && reviewingHomework.childId && bonusPointsInput > 0) {
       onAwardPoints(reviewingHomework.childId, bonusPointsInput);
     }
@@ -118,9 +200,10 @@ export const WorksheetHub: React.FC<WorksheetHubProps> = ({
   };
 
   // Filtrado de fichas y deberes
-  const displayedWorksheets = isStudent
+  const bySubject = (w: PrintableWorksheet) => !subjectFilter || (w.subject || '').toLowerCase().startsWith(subjectFilter.toLowerCase().slice(0, 5));
+  const displayedWorksheets = (isStudent
     ? worksheets.filter((w) => w.childId === studentChildId || (!w.childId && childrenList.length <= 1))
-    : (filterChildId === 'all' ? worksheets : worksheets.filter((w) => w.childId === filterChildId));
+    : (filterChildId === 'all' ? worksheets : worksheets.filter((w) => w.childId === filterChildId))).filter(bySubject);
 
   const displayedHomework = isStudent
     ? homeworkRecords.filter((h) => h.childId === studentChildId || (!h.childId && childrenList.length <= 1))
@@ -138,14 +221,12 @@ export const WorksheetHub: React.FC<WorksheetHubProps> = ({
 
         {scanningWorksheet && (
           <WorksheetScannerModal
+            isDemo={isDemo}
             worksheet={scanningWorksheet}
-            onClose={() => setScanningWorksheet(null)}
+            onClose={() => { setScanningWorksheet(null); setFlowImage(null); }}
             onCorrectionComplete={handleCorrectionComplete}
-            onAwardPoints={(pts) => {
-              if (onAwardPoints && scanningWorksheet.childId) {
-                onAwardPoints(scanningWorksheet.childId, pts);
-              }
-            }}
+            isStudent={isStudent}
+            initialImage={flowImage}
           />
         )}
       </div>
@@ -160,12 +241,12 @@ export const WorksheetHub: React.FC<WorksheetHubProps> = ({
           homeworkRecord={selectedHomework}
           onBack={() => setSelectedHomework(null)}
           onOpenReinforcementWorksheet={() => {
-            const linkedWs = worksheets.find((w) => w.id === selectedHomework.reinforcementWorksheetId);
+            const linkedWs = worksheets.find((w) => w.id === selectedHomework.reinforcementWorksheetId) || selectedHomework.reinforcementWorksheet;
             if (linkedWs) {
               setSelectedWorksheet(linkedWs);
               setSelectedHomework(null);
             } else {
-              alert('Ficha de refuerzo no encontrada en el almacenamiento.');
+              setNotice('Esta corrección no tiene ficha de refuerzo.');
             }
           }}
         />
@@ -205,12 +286,12 @@ export const WorksheetHub: React.FC<WorksheetHubProps> = ({
 
         {/* Botones de acción principales */}
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full md:w-auto">
-          {/* Botón común: Corregir Deberes de Clase / Casa */}
+          {/* Botón único: Hago una foto (ficha con QR, deberes del cole o "no sé hacerlo") */}
           <button
-            onClick={() => setIsHomeworkModalOpen(true)}
+            onClick={openPhotoFlow}
             className="px-5 py-3.5 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white font-black text-xs sm:text-sm rounded-2xl shadow-lg hover:shadow-xl transition-all flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer transform hover:-translate-y-0.5"
           >
-            <span>📸 Corregir Deberes de Clase / Cuaderno</span>
+            <span>📸 Hago una foto</span>
           </button>
 
           {/* Botón para crear nueva ficha (Padres) o desbloquear PIN */}
@@ -233,6 +314,45 @@ export const WorksheetHub: React.FC<WorksheetHubProps> = ({
           ) : null}
         </div>
       </div>
+
+      {notice && (
+        <div role="status" className="flex items-start justify-between gap-3 bg-blue-50 border border-blue-100 text-blue-800 text-sm font-bold rounded-2xl px-4 py-3">
+          <span>{notice}</span>
+          <button onClick={() => setNotice(null)} className="text-blue-400 font-black" aria-label="Cerrar aviso">×</button>
+        </div>
+      )}
+      {isDemo && (
+        <div className="bg-amber-50 border border-amber-100 text-amber-800 text-sm font-bold rounded-2xl px-4 py-3">
+          En el modo demostración las fichas y las correcciones no se guardan. Crea una cuenta para usarlas.
+        </div>
+      )}
+      {loading && <p className="text-sm font-bold text-slate-400 animate-pulse">Cargando fichas…</p>}
+      {subjectFilter && (
+        <div className="flex items-center gap-3 text-sm font-bold text-orange-700 bg-orange-50 border border-orange-100 rounded-2xl px-4 py-2">
+          <span>Mostrando solo fichas de {subjectFilter}</span>
+          <button onClick={() => setSubjectFilter(null)} className="text-orange-400 font-black">Ver todas</button>
+        </div>
+      )}
+
+      <input ref={photoInputRef} data-testid="photo-input" type="file" accept="image/*" capture="environment" className="hidden" onChange={handlePhotoPicked} tabIndex={-1} />
+      {photoChooser === 'choose' && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="photo-chooser-title">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-md w-full p-6 space-y-4">
+            <h3 id="photo-chooser-title" className="text-xl font-black text-slate-900">📸 ¿Qué quieres hacer con la foto?</h3>
+            <button onClick={() => pickPhoto('correct')} className="w-full text-left p-4 rounded-2xl border-2 border-emerald-100 hover:border-emerald-300 bg-emerald-50">
+              <p className="font-black text-emerald-900">✅ Corrígeme</p>
+              <p className="text-xs text-emerald-700 mt-1">Una ficha de EduAmigo (la reconozco por su código QR) o tus deberes del cole.</p>
+            </button>
+            {onAskTutorWithPhoto && (
+              <button onClick={() => pickPhoto('help')} className="w-full text-left p-4 rounded-2xl border-2 border-indigo-100 hover:border-indigo-300 bg-indigo-50">
+                <p className="font-black text-indigo-900">🤔 No sé hacer este ejercicio</p>
+                <p className="text-xs text-indigo-700 mt-1">El tutor te guía paso a paso, sin hacértelo.</p>
+              </button>
+            )}
+            <button onClick={() => setPhotoChooser(null)} className="w-full text-slate-400 font-bold text-sm">Cancelar</button>
+          </div>
+        </div>
+      )}
 
       {/* Selector de Pestañas: 1. Fichas A4 Imprimibles vs 2. Deberes de Clase & Refuerzo */}
       <div className="flex items-center gap-3 border-b border-slate-200 pb-3">
@@ -288,16 +408,19 @@ export const WorksheetHub: React.FC<WorksheetHubProps> = ({
       {/* Modal de Corrección de Deberes de Clase con IA */}
       {isHomeworkModalOpen && (
         <HomeworkScannerModal
+          isDemo={isDemo}
           childrenList={childrenList}
           books={books}
           selectedChildId={studentChildId}
           isStudent={isStudent}
-          onClose={() => setIsHomeworkModalOpen(false)}
+          onClose={() => { setIsHomeworkModalOpen(false); setFlowImage(null); }}
+          initialImage={flowImage}
           onCorrectionComplete={handleHomeworkComplete}
           onOpenRemedialGuide={(rec) => setSelectedHomework(rec)}
           onOpenReinforcementWorksheet={(wsId) => {
             const ws = worksheets.find((w) => w.id === wsId);
             if (ws) setSelectedWorksheet(ws);
+            else loadData();
           }}
           onAwardPoints={(cId, pts) => {
             if (onAwardPoints) onAwardPoints(cId, pts);
@@ -308,14 +431,12 @@ export const WorksheetHub: React.FC<WorksheetHubProps> = ({
       {/* Modal de Escaneo de Ficha si se invoca desde la tarjeta */}
       {scanningWorksheet && (
         <WorksheetScannerModal
+          isDemo={isDemo}
           worksheet={scanningWorksheet}
-          onClose={() => setScanningWorksheet(null)}
+          onClose={() => { setScanningWorksheet(null); setFlowImage(null); }}
           onCorrectionComplete={handleCorrectionComplete}
-          onAwardPoints={(pts) => {
-            if (onAwardPoints && scanningWorksheet.childId) {
-              onAwardPoints(scanningWorksheet.childId, pts);
-            }
-          }}
+          isStudent={isStudent}
+          initialImage={flowImage}
         />
       )}
 
@@ -381,7 +502,7 @@ export const WorksheetHub: React.FC<WorksheetHubProps> = ({
                   </button>
                 ) : null}
                 <button
-                  onClick={() => setIsHomeworkModalOpen(true)}
+                  onClick={openPhotoFlow}
                   className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs rounded-xl shadow-md transition-all cursor-pointer"
                 >
                   📸 Fotografiar Deberes de Clase
@@ -502,6 +623,23 @@ export const WorksheetHub: React.FC<WorksheetHubProps> = ({
       )}
 
       {/* CONTENIDO DE LA PESTAÑA 2: DEBERES DE CLASE CORREGIDOS & GUÍAS DE REFUERZO */}
+      {activeTab === 'homework' && !isStudent && displayedHomework.length > 0 && (
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3" data-testid="homework-metrics">
+          {[
+            ['Deberes corregidos', String(displayedHomework.length)],
+            ['Nota media', (displayedHomework.reduce((a, h) => a + (h.score || 0), 0) / displayedHomework.length).toFixed(1)],
+            ['Mucho esfuerzo 🔥', String(displayedHomework.filter((h) => h.effortLevel === 'alto').length)],
+            ['Hechos solos 🎒', String(displayedHomework.filter((h) => h.completedByStudent).length)],
+            ['Con tu comentario', String(displayedHomework.filter((h) => !!h.tutorFeedback).length)],
+          ].map(([label, value]) => (
+            <div key={label} className="bg-white rounded-2xl border border-slate-200 p-4">
+              <p className="text-[11px] font-black text-slate-400 uppercase tracking-wide">{label}</p>
+              <p className="text-2xl font-black text-slate-900 mt-1">{value}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
       {activeTab === 'homework' && (
         <div className="bg-white rounded-3xl p-6 sm:p-8 shadow-sm border border-slate-200 space-y-6">
           <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 pb-4">
@@ -515,7 +653,7 @@ export const WorksheetHub: React.FC<WorksheetHubProps> = ({
             </div>
 
             <button
-              onClick={() => setIsHomeworkModalOpen(true)}
+              onClick={openPhotoFlow}
               className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs rounded-xl shadow-md transition-all flex items-center gap-2 cursor-pointer"
             >
               <span>📸 Subir Nueva Foto de Deberes</span>
@@ -536,7 +674,7 @@ export const WorksheetHub: React.FC<WorksheetHubProps> = ({
                 </p>
               </div>
               <button
-                onClick={() => setIsHomeworkModalOpen(true)}
+                onClick={openPhotoFlow}
                 className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs rounded-xl shadow-md transition-all cursor-pointer inline-flex items-center gap-2"
               >
                 <span>📸 Fotografiar y Corregir Deberes Ahora</span>
@@ -740,6 +878,7 @@ export const WorksheetHub: React.FC<WorksheetHubProps> = ({
                 <span className="font-bold text-slate-600">Nota obtenida por IA:</span>
                 <span className="font-black text-emerald-700 text-sm">{reviewingHomework.score.toFixed(1)}/10</span>
               </div>
+              <ReportErrorButton childId={reviewingHomework.childId} kind="homework" refId={reviewingHomework.id} isDemo={isDemo} />
               <div className="flex justify-between items-center">
                 <span className="font-bold text-slate-600">Esfuerzo declarado:</span>
                 <span className="font-bold text-slate-800 uppercase text-[11px]">

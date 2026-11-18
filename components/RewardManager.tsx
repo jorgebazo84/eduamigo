@@ -17,7 +17,8 @@ const RewardManager: React.FC<RewardManagerProps> = ({ rewards, onUpdateRewards 
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title) return;
+    if (!title.trim()) return;
+    if (!Number.isFinite(points) || points < 10 || points > 100000) { alert('El coste debe estar entre 10 y 100.000 puntos.'); return; }
     const newReward: Reward = {
       id: crypto.randomUUID(),
       title,
@@ -36,7 +37,10 @@ const RewardManager: React.FC<RewardManagerProps> = ({ rewards, onUpdateRewards 
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
-        <h3 className="text-xl font-black text-blue-900">Configuración de Premios</h3>
+        <div>
+          <h3 className="text-xl font-black text-blue-900">Catálogo de premios de familia</h3>
+          <p className="text-xs text-slate-500 mt-1">Tus hijos los piden con sus puntos y tú los aceptas o rechazas arriba. Como referencia, un día normal de estudio da entre 100 y 250 puntos.</p>
+        </div>
         <button 
           onClick={() => setShowForm(!showForm)}
           className="bg-blue-600 text-white px-4 py-2 rounded-xl text-xs font-black shadow-md hover:bg-blue-700 transition-all"
@@ -62,6 +66,8 @@ const RewardManager: React.FC<RewardManagerProps> = ({ rewards, onUpdateRewards 
               <label className="text-[10px] font-black text-blue-400 uppercase ml-2">Coste en Puntos</label>
               <input 
                 type="number"
+                min={10}
+                max={100000}
                 value={points}
                 onChange={e => setPoints(parseInt(e.target.value))}
                 className="w-full bg-blue-50 p-3 rounded-xl font-bold outline-none"
@@ -102,7 +108,8 @@ const RewardManager: React.FC<RewardManagerProps> = ({ rewards, onUpdateRewards 
             </div>
             <button 
               onClick={() => deleteReward(reward.id)}
-              className="text-red-300 hover:text-red-500 transition-all opacity-0 group-hover:opacity-100"
+              className="text-red-300 hover:text-red-500 transition-all md:opacity-0 md:group-hover:opacity-100"
+              aria-label={`Borrar ${reward.title}`}
             >
               ✕
             </button>

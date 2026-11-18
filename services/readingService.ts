@@ -1,68 +1,49 @@
+// Cliente de Lectura (opción 6): biblioteca por curso, velocidad, comprensión y grabaciones. Sin Gemini.
+const call = async (action: string, body: any) => {
+  let res: Response;
+  try {
+    res = await fetch(`api_reading.php?action=${action}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(body) });
+  } catch {
+    throw new Error('Sin conexión. Revisa internet e inténtalo de nuevo.');
+  }
+  let data: any = {};
+  try { data = await res.json(); } catch { /* vacío */ }
+  if (!res.ok) throw new Error(data.error || 'Algo ha fallado. Inténtalo de nuevo.');
+  return data;
+};
 
-import { Type } from "@google/genai";
-import { ai } from "./geminiService";
-import { ReadingAnalysis } from "../types/reading";
+export interface WpmReference { course: string; target: number; min: number; max: number }
+export interface TextCard {
+  id: string; level: number; course: string; title: string; author: string; source: string; genre: string; link: string;
+  words: number; timesRead: number; bestComprehension: number | null;
+}
+export interface ReadingList { level: number; course: string; reference: WpmReference; texts: TextCard[]; easier: TextCard[]; challenge: TextCard[]; allRead: boolean; pointsToday: number; pointsCap: number }
+export interface ReadingStart { attemptId: string; text: TextCard & { text: string }; questions: { type: string; label: string; q: string; options: string[] }[]; reference: WpmReference }
+export interface ReadingResult {
+  recordId: string; words: number; seconds: number; wpm: number; wpmBand: 'below' | 'within' | 'above'; reference: WpmReference; counted: boolean;
+  correct: number; total: number;
+  detail: { type: string; label: string; q: string; options: string[]; chosen: number; correctIndex: number; correct: boolean; explanation: string }[];
+  points: number; pointsCapReached: boolean; newPoints: number; audioSaved: boolean; audioError: string | null;
+}
+export interface ReadingParentStats {
+  reference: WpmReference; course: string; avgWpm: number | null; comprehension: number | null;
+  byType: { type: string; label: string; accuracy: number | null; total: number }[];
+  trend: { wpm: number; createdAt: number }[];
+  records: { id: string; title: string; wpm: number; wpmBand: string; counted: boolean; correct: number; total: number; seconds: number; trackingAccuracy: number | null; createdAt: number; audioUrl: string | null }[];
+  totalReadings: number;
+}
 
 export const readingService = {
-  async analyzeReading(audioBase64: string, textToRead: string, grade: string): Promise<ReadingAnalysis> {
-    const prompt = `Analiza esta grabación de audio de un niño de ${grade} leyendo el siguiente texto: "${textToRead}".
-    Evalúa:
-    1. Fluidez: ¿Lee con ritmo y sin demasiadas pausas?
-    2. Entonación: ¿Respeta signos de puntuación y da sentido a las frases?
-    3. Precisión: ¿Pronuncia correctamente todas las palabras?
-    4. Comprensión: Basándote en cómo lee, ¿parece entender el texto?
-    
-    Genera una puntuación del 1 al 10 y un feedback motivador.
-    Sugiere 2 ejercicios cortos para mejorar los puntos débiles detectados.
-    IMPORTANTE: Proporciona la transcripción exacta de lo que el niño ha dicho.`;
-
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash-native-audio-preview-12-2025",
-      contents: [
-        {
-          parts: [
-            { text: prompt },
-            {
-              inlineData: {
-                mimeType: "audio/wav",
-                data: audioBase64
-              }
-            }
-          ]
-        }
-      ],
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            score: { type: Type.NUMBER },
-            fluency: { type: Type.STRING },
-            intonation: { type: Type.STRING },
-            accuracy: { type: Type.STRING },
-            comprehensionScore: { type: Type.NUMBER },
-            comprehensionFeedback: { type: Type.STRING },
-            generalFeedback: { type: Type.STRING },
-            transcription: { type: Type.STRING },
-            suggestedExercises: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  title: { type: Type.STRING },
-                  description: { type: Type.STRING },
-                  text: { type: Type.STRING },
-                  difficulty: { type: Type.STRING, enum: ["fácil", "medio", "difícil"] }
-                },
-                required: ["title", "description", "text", "difficulty"]
-              }
-            }
-          },
-          required: ["score", "fluency", "intonation", "accuracy", "comprehensionScore", "comprehensionFeedback", "generalFeedback", "suggestedExercises", "transcription"]
-        }
-      }
-    });
-
-    return JSON.parse(response.text || '{}') as ReadingAnalysis;
-  }
+  list: (childId: string): Promise<ReadingList> => call('list', { childId }),
+  start: (childId: string, textId: string): Promise<ReadingStart> => call('start', { childId, textId }),
+  submit: (p: { childId: string; attemptId: string; seconds: number; answers: number[]; audio?: string | null; trackingAccuracy?: number | null; readWhole?: boolean }): Promise<ReadingResult> => call('submit', p),
+  more: (childId: string): Promise<{ text: TextCard }> => call('more', { childId }),
+  parentStats: (childId: string): Promise<ReadingParentStats> => call('parent_stats', { childId }),
+  deleteAudio: (childId: string, recordId: string) => call('delete_audio', { childId, recordId }),
 };
+
+/** Mensaje amable sobre la velocidad, sin convertirlo en una nota. */
+export const wpmMessage = (band: string, ref: WpmReference) =>
+  band === 'below' ? `Aún vas un poco más despacio de lo habitual en ${ref.course} (de ${ref.min} a ${ref.max} palabras por minuto). ¡Leyendo cada día irás más rápido!`
+  : band === 'above' ? `¡Lees más rápido de lo habitual en ${ref.course}! Recuerda que lo importante es entender lo que lees.`
+  : `Lees a una velocidad normal para ${ref.course} (de ${ref.min} a ${ref.max} palabras por minuto). ¡Muy bien!`;
