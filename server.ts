@@ -1,7 +1,6 @@
 
 import 'dotenv/config';
 import express from 'express';
-import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
@@ -22,14 +21,42 @@ import { registerRewardsRoutes, awardActivity, earnedToday, streakInfo, CALLIGRA
 import { registerWorksheetRoutes } from './server/worksheets';
 import { registerGamesRoutes } from './server/games';
 import { isValidGrade } from './shared/grades';
+import { storageMode } from './server/storage';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Modo producción (INC-014): NODE_ENV=production, `npm start` (--prod) o ejecución en Render.
+// Se fija NODE_ENV para que Express y los avisos de db.ts/storage.ts se comporten como en producción.
+const IS_PROD = process.env.NODE_ENV === 'production' || process.argv.includes('--prod') || !!process.env.RENDER;
+if (IS_PROD) process.env.NODE_ENV = 'production';
+
 async function startServer() {
   const app = express();
-  const PORT = 3000;
-  
+  // Render asigna el puerto en PORT; en local, 3000
+  const PORT = Number(process.env.PORT) || 3000;
+
+  // En producción no se arranca a medias: sin build, o en Render sin base de datos o almacenamiento persistentes,
+  // el servidor se detiene con un mensaje claro en vez de servir una página rota o perder datos en silencio.
+  if (IS_PROD) {
+    const problems: string[] = [];
+    if (!fs.existsSync(path.join(process.cwd(), 'dist', 'index.html'))) {
+      problems.push('Falta dist/index.html: ejecuta "npm run build" antes de arrancar (en Render, en el Build Command).');
+    }
+    if (process.env.RENDER) {
+      if (!process.env.TURSO_DATABASE_URL || !process.env.TURSO_AUTH_TOKEN) {
+        problems.push('Faltan TURSO_DATABASE_URL y/o TURSO_AUTH_TOKEN: sin ellas la base de datos se pierde en cada despliegue.');
+      }
+      if (storageMode() === 'local') {
+        problems.push('Faltan S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY_ID y/o S3_SECRET_ACCESS_KEY: sin ellas las fotos y las copias se pierden en cada despliegue.');
+      }
+    }
+    if (problems.length) {
+      for (const p of problems) console.error(`[ARRANQUE] ${p}`);
+      process.exit(1);
+    }
+  }
+
   // Base de datos: Turso en producción, archivo SQLite en local (ver server/db.ts)
   let db: Db;
   try {
@@ -237,6 +264,11 @@ async function startServer() {
     'ALTER TABLE users ADD COLUMN pin_failed INTEGER DEFAULT 0',
     'ALTER TABLE users ADD COLUMN pin_locked_until BIGINT DEFAULT 0',
     'ALTER TABLE users ADD COLUMN needs_pin_change INTEGER DEFAULT 0',
+    // Bloqueo progresivo y contador propio de la recuperación de contraseña (INC-003, INC-005)
+    'ALTER TABLE users ADD COLUMN pin_lock_level INTEGER DEFAULT 0',
+    'ALTER TABLE users ADD COLUMN reset_failed INTEGER DEFAULT 0',
+    'ALTER TABLE users ADD COLUMN reset_locked_until BIGINT DEFAULT 0',
+    'ALTER TABLE users ADD COLUMN reset_lock_level INTEGER DEFAULT 0',
   ]) {
     try { await db.exec(ddl); } catch { /* columna ya existente */ }
   }
@@ -245,7 +277,9 @@ async function startServer() {
   const SESSION_DAYS = 180;                 // dispositivo familiar: la sesión dura meses
   const PARENT_WINDOW_MS = 15 * 60 * 1000;  // ventana de panel de padres tras el PIN (se renueva con el uso)
   const PIN_MAX_FAILS = 5;
-  const PIN_LOCK_MS = 15 * 60 * 1000;
+  // Bloqueo progresivo tras cada tanda de PIN_MAX_FAILS fallos: 15 min, 1 h y después 24 h cada vez.
+  const PIN_LOCK_STEPS_MS = [15 * 60 * 1000, 60 * 60 * 1000, 24 * 3600 * 1000];
+  const lockDuration = (level: number) => PIN_LOCK_STEPS_MS[Math.min(Math.max(0, level), PIN_LOCK_STEPS_MS.length - 1)];
   const WEAK_PINS = new Set(['0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999',
     '1234', '4321', '0123', '1212', '2580', '1122', '6969', '1004', '2000', '1010']);
 
@@ -380,17 +414,27 @@ async function startServer() {
     const { email, password, parentPin, newPin, newPassword, pin } = req.body || {};
     const normEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
 
-    // Registra un fallo de PIN y bloquea tras PIN_MAX_FAILS intentos.
-    const registerPinFailure = async (user: any) => {
-      const fails = (Number(user.pin_failed) || 0) + 1;
-      const lockedUntil = fails >= PIN_MAX_FAILS ? Date.now() + PIN_LOCK_MS : 0;
-      await db.prepare('UPDATE users SET pin_failed = ?, pin_locked_until = ? WHERE id = ?')
-        .run(lockedUntil ? 0 : fails, lockedUntil, user.id);
-      return { fails, lockedUntil };
+    // Registra un fallo y bloquea tras PIN_MAX_FAILS intentos, cada vez más tiempo.
+    // 'pin' = panel de padres (verify_pin); 'reset' = recuperación de contraseña. Contadores separados:
+    // quien solo conoce el email no puede bloquear el panel de padres (INC-005).
+    const registerFailure = async (user: any, kind: 'pin' | 'reset') => {
+      const failedCol = kind === 'pin' ? 'pin_failed' : 'reset_failed';
+      const untilCol = kind === 'pin' ? 'pin_locked_until' : 'reset_locked_until';
+      const levelCol = kind === 'pin' ? 'pin_lock_level' : 'reset_lock_level';
+      const fails = (Number(user[failedCol]) || 0) + 1;
+      if (fails >= PIN_MAX_FAILS) {
+        const level = Number(user[levelCol]) || 0;
+        const lockedUntil = Date.now() + lockDuration(level);
+        await db.prepare(`UPDATE users SET ${failedCol} = 0, ${untilCol} = ?, ${levelCol} = ? WHERE id = ?`).run(lockedUntil, level + 1, user.id);
+        return { fails, lockedUntil };
+      }
+      await db.prepare(`UPDATE users SET ${failedCol} = ? WHERE id = ?`).run(fails, user.id);
+      return { fails, lockedUntil: 0 };
     };
     const pinLockMessage = (lockedUntil: number) => {
       const mins = Math.max(1, Math.ceil((lockedUntil - Date.now()) / 60000));
-      return `Demasiados intentos. Espera ${mins} min y vuelve a probar.`;
+      const wait = mins > 60 ? `${Math.ceil(mins / 60)} h` : `${mins} min`;
+      return `Demasiados intentos. Espera ${wait} y vuelve a probar.`;
     };
 
     try {
@@ -436,11 +480,11 @@ async function startServer() {
         const lockedUntil = Number(user.pin_locked_until) || 0;
         if (lockedUntil > Date.now()) return res.status(429).json({ error: pinLockMessage(lockedUntil), code: 'PIN_LOCKED', lockedUntil });
         if (!checkPin(String(pin || ''), user.pin_hash)) {
-          const r = await registerPinFailure(user);
+          const r = await registerFailure(user, 'pin');
           if (r.lockedUntil) return res.status(429).json({ error: pinLockMessage(r.lockedUntil), code: 'PIN_LOCKED', lockedUntil: r.lockedUntil });
           return res.status(400).json({ error: 'PIN incorrecto', code: 'PIN_WRONG', attemptsLeft: PIN_MAX_FAILS - r.fails });
         }
-        await db.prepare('UPDATE users SET pin_failed = 0, pin_locked_until = 0 WHERE id = ?').run(user.id);
+        await db.prepare('UPDATE users SET pin_failed = 0, pin_locked_until = 0, pin_lock_level = 0 WHERE id = ?').run(user.id);
         await db.prepare('UPDATE sessions SET parent_until = ? WHERE token_hash = ?').run(Date.now() + PARENT_WINDOW_MS, session.tokenHash);
         res.json({ status: 'success' });
 
@@ -454,25 +498,26 @@ async function startServer() {
         if (!session) return res.status(401).json({ error: 'Sin sesión', code: 'AUTH_REQUIRED' });
         if (!isParentUnlocked(session)) return res.status(403).json({ error: 'Esta acción necesita el PIN de padres.', code: 'PIN_REQUIRED' });
         const pinErr = validatePinFormat(newPin); if (pinErr) throw new Error(pinErr);
-        await db.prepare('UPDATE users SET pin_hash = ?, parent_pin = NULL, needs_pin_change = 0, pin_failed = 0, pin_locked_until = 0 WHERE id = ?')
+        await db.prepare('UPDATE users SET pin_hash = ?, parent_pin = NULL, needs_pin_change = 0, pin_failed = 0, pin_locked_until = 0, pin_lock_level = 0 WHERE id = ?')
           .run(hashPin(newPin), session.userId);
         res.json({ status: 'success' });
 
       } else if (action === 'reset_password') {
-        // Recuperación con PIN (provisional hasta tener recuperación por email). Comparte el límite de intentos del PIN.
+        // Recuperación con PIN (provisional hasta tener recuperación por email).
+        // Tiene su propio límite de intentos, separado del panel de padres (INC-005), con bloqueo progresivo (INC-003).
         if (!normEmail || !pin || !newPassword) throw new Error('Datos incompletos para restablecer contraseña');
         const pwErr = validatePassword(newPassword); if (pwErr) throw new Error(pwErr);
         const user = await db.prepare('SELECT * FROM users WHERE lower(email) = ?').get(normEmail);
         if (!user) return res.status(400).json({ error: 'Email o PIN incorrectos' });
-        const lockedUntil = Number(user.pin_locked_until) || 0;
+        const lockedUntil = Number(user.reset_locked_until) || 0;
         if (lockedUntil > Date.now()) return res.status(429).json({ error: pinLockMessage(lockedUntil), code: 'PIN_LOCKED' });
         if (!checkPin(String(pin), user.pin_hash)) {
-          const r = await registerPinFailure(user);
+          const r = await registerFailure(user, 'reset');
           if (r.lockedUntil) return res.status(429).json({ error: pinLockMessage(r.lockedUntil), code: 'PIN_LOCKED' });
           return res.status(400).json({ error: 'Email o PIN incorrectos' });
         }
         const hash = await bcrypt.hash(newPassword, 10);
-        await db.prepare('UPDATE users SET password_hash = ?, pin_failed = 0, pin_locked_until = 0 WHERE id = ?').run(hash, user.id);
+        await db.prepare('UPDATE users SET password_hash = ?, reset_failed = 0, reset_locked_until = 0, reset_lock_level = 0, pin_failed = 0, pin_locked_until = 0, pin_lock_level = 0 WHERE id = ?').run(hash, user.id);
         // Cerrar todas las sesiones abiertas de esa cuenta
         await db.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
         res.json({ status: 'success' });
@@ -562,6 +607,7 @@ async function startServer() {
         res.json({ status: 'success' });
       } else if (action === 'save_history') {
         if (!data.id || !data.childId) throw new Error('Datos de historial incompletos');
+        if (!(await db.prepare('SELECT id FROM children WHERE id = ? AND parentId = ?').get(data.childId, userId))) throw new Error('Perfil no encontrado');
         await db.prepare('INSERT INTO history (id, childId, grade, subject, region, question, answer_json, timestamp, duration, sentiment, imageUrl, audioUrl, transcription) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
           .run(data.id, data.childId, data.grade, data.subject, data.region, data.question, JSON.stringify(data.answer || {}), data.timestamp, data.duration || null, data.sentiment || null, data.imageUrl || null, data.audioUrl || null, data.transcription || null);
         res.json({ status: 'success' });
@@ -649,6 +695,7 @@ async function startServer() {
           .run(data.id, data.bookId, data.childId, data.topicIndex, data.topicTitle, Math.max(0, Math.min(100, Math.round(Number(data.pointsReward) || 0))));
         res.json({ success: true });
       } else if (action === 'complete_study_task') {
+        if (!(await db.prepare('SELECT id FROM children WHERE id = ? AND parentId = ?').get(String(data.childId || ''), userId))) return res.status(404).json({ error: 'Perfil no encontrado' });
         const task = await db.prepare('SELECT * FROM study_tasks WHERE id = ? AND childId = ?').get(String(data.id || ''), String(data.childId));
         if (!task) return res.status(404).json({ error: 'No encuentro esa tarea.' });
         if (task.status === 'completed') return res.status(409).json({ error: 'Esta tarea ya está hecha.' });
@@ -837,8 +884,9 @@ async function startServer() {
     console.error('[COPIA] Error al preparar las copias de seguridad:', err);
   }
 
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== 'production') {
+  // Desarrollo: Vite como middleware (solo se carga aquí, nunca en producción)
+  if (!IS_PROD) {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',

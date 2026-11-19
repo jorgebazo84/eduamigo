@@ -22,9 +22,9 @@ Este registro recoge solo incidencias de este proyecto. Si algo afecta a otro pr
 |---|---|---|---|---|
 | INC-001 | Alta | Abierta | Datos de menores sin base de cumplimiento (privacidad, consentimiento, borrado de cuenta, IA externa) | estático + supuesto |
 | INC-002 | Alta | Abierta | Al borrar un hijo no se borran sus datos asociados ni sus fotos | estático |
-| INC-003 | Alta | Abierta | La contraseña se restablece solo con email y PIN de 4 cifras, sin bloqueo progresivo | estático |
-| INC-004 | Media | Abierta | IDOR de escritura en `save_history` | estático |
-| INC-005 | Media | Abierta | Un anónimo puede bloquear el PIN de una cuenta ajena | estático |
+| INC-003 | Alta | Abierta (mitigada en CAM-005) | La contraseña se restablece solo con email y PIN de 4 cifras; ya tiene bloqueo progresivo, falta recuperación por email | estático + ejecutado |
+| INC-004 | Media | Cerrada | IDOR de escritura en `save_history` | ejecutado (CAM-003) |
+| INC-005 | Media | Cerrada | Un anónimo puede bloquear el PIN de una cuenta ajena | ejecutado (CAM-005) |
 | INC-006 | Media | Abierta | Sin límite de intentos en login ni en registro; se puede saber qué emails tienen cuenta | estático |
 | INC-007 | Media | Abierta | Sin cabeceras de seguridad (CSP, X-Frame-Options, Referrer-Policy) | estático |
 | INC-008 | Baja | Abierta | CSRF por GET en `/api.php` y `/api_study.php` | estático |
@@ -33,7 +33,7 @@ Este registro recoge solo incidencias de este proyecto. Si algo afecta a otro pr
 | INC-011 | Baja | Abierta | Posible carrera en las peticiones de premios | supuesto |
 | INC-012 | Baja | Abierta | Token de `/admin/avisos` en la URL | estático |
 | INC-013 | Baja | Abierta | Errores internos devueltos al cliente; cookie mal formada provoca error 500 | estático |
-| INC-014 | Alta | Abierta | Despliegue frágil: puerto fijo, Vite en producción, pérdida de datos sin Turso o S3 | estático + supuesto |
+| INC-014 | Alta | Verificada | Despliegue frágil: puerto fijo, Vite en producción, pérdida de datos sin Turso o S3 | ejecutado (CAM-007) |
 | INC-015 | Alta | Abierta | Esquema sin migraciones versionadas, sin claves foráneas y sin índices en las tablas base | estático |
 | INC-016 | Media | Abierta | PWA y modo sin conexión incoherentes | estático |
 | INC-017 | Media | Abierta | Contratos entre cliente y servidor sin tipar, con clientes HTTP duplicados | estático |
@@ -41,6 +41,8 @@ Este registro recoge solo incidencias de este proyecto. Si algo afecta a otro pr
 | INC-019 | Baja | Abierta | Restos de la plantilla AI Studio y dependencias mal clasificadas | estático |
 | INC-020 | Baja | Abierta | Archivos demasiado grandes y código de arranque innecesario | estático |
 | INC-021 | Media | Abierta | No hay pruebas automatizadas | estático |
+| INC-022 | Alta | Cerrada | Dependencias con vulnerabilidades conocidas: 1 crítica, 9 altas (queda 1 baja aceptada) | ejecutado (CAM-006) |
+| INC-023 | Media | Cerrada | IDOR en `complete_study_task`: el `childId` que se valida no es el que se usa | ejecutado (CAM-004) |
 
 ---
 
@@ -64,20 +66,38 @@ Este registro recoge solo incidencias de este proyecto. Si algo afecta a otro pr
 - **Escenario**: un anónimo que conozca el email prueba PINs a razón de 5 cada 15 minutos. Con 10.000 combinaciones, en unos días acierta y toma la cuenta. No se pide la contraseña anterior ni se manda confirmación por email.
 - **Evidencia**: estático.
 - **Impacto**: acceso completo a la cuenta, con fotos y conversaciones de menores.
+- **Seguimiento (19/11/2026), mitigación parcial en CAM-005**: la incidencia sigue **Abierta**.
+  - **Bloqueo progresivo**: el PIN y la recuperación se bloquean 15 min, luego 1 h y después 24 h cada vez. Medido [ejecutado]: 15, 60, 1440 y 1440 min (antes, siempre 15).
+  - **Efecto**: el ataque por fuerza bruta pasa de unos 10 días a unos 1.000 días de media.
+  - **Pendiente para resolverla**:
+    - recuperación por email (requiere servicio de correo);
+    - PIN más largo;
+    - límite por IP (no es fiable mientras siga abierta INC-022, por `proxy-addr`).
+  - **Concurrencia**: 50 peticiones simultáneas a `reset_password` comprobaron solo 4 PIN; el resto recibió 429 [ejecutado, SQLite local]. Contra Turso, con más latencia, está NOT TESTED. La revisión independiente recomienda que el contador se actualice de forma atómica.
+  - **Limitación conocida**: un desconocido puede bloquear la recuperación de contraseña de una cuenta hasta 24 h. No afecta al panel de padres ni al inicio de sesión normal.
+  - **Propuesta pendiente de decisión del usuario**: rebajar la gravedad a Media.
 
 ## INC-004 — IDOR de escritura en `save_history`
-- **Gravedad**: Media · **Estado**: Abierta · **Área**: autorización / aislamiento
+- **Gravedad**: Media · **Estado**: Cerrada (19/11/2026; el usuario confirmó el cierre con «Sí, ciérralas») · **Área**: autorización / aislamiento
 - **Archivos afectados**: `server.ts:563-567`. Inserta en `history` con el `data.childId` del cliente sin comprobar que el niño sea de la familia. En cambio, `add_event` (`:569`) sí lo comprueba [C].
 - **Escenario**: un usuario con sesión que conozca el `childId` de otro niño escribe texto libre en su historial, y esa familia lo ve en su panel (`get_initial_data`, `:507`). Los ids de los niños los genera el cliente.
 - **Evidencia**: estático.
 - **Impacto**: se rompe la integridad de los datos de otra familia y se le puede mostrar contenido arbitrario.
+- **Seguimiento (19/11/2026)**:
+  - Reproducido [ejecutado] en la copia aislada con el código original. B guardó una entrada en el historial del hijo de A (respuesta `200 {"status":"success"}`) y A la vio en `get_initial_data`.
+  - Corregido en CAM-003. Tras la corrección: `400 {"error":"Perfil no encontrado"}`, la fila no se crea y A sigue guardando en el historial de su propio hijo.
+  - Revisión independiente de `auditor-ciberseguridad`: APROBADA CON OBSERVACIONES. La observación lleva a un hallazgo nuevo en `complete_study_task`, que se propone como incidencia aparte.
 
 ## INC-005 — Bloqueo del PIN de cuentas ajenas
-- **Gravedad**: Media · **Estado**: Abierta · **Área**: autenticación / disponibilidad
+- **Gravedad**: Media · **Estado**: Cerrada (19/11/2026; el usuario confirmó el cierre con «Sí, ciérrala») · **Área**: autenticación / disponibilidad
 - **Archivos afectados**: `server.ts:466-470`. `reset_password` usa el mismo contador de fallos que `verify_pin` [C].
 - **Escenario**: un anónimo envía 5 intentos de `reset_password` con un PIN erróneo y bloquea el panel de padres de esa cuenta durante 15 minutos. Puede repetirlo sin fin.
 - **Evidencia**: estático.
 - **Impacto**: los padres no pueden entrar en su panel ni aprobar premios.
+- **Seguimiento (19/11/2026)**:
+  - **Reproducido** [ejecutado] en la copia aislada con el código original, mediante el script `inc005.mjs`. Tras `reset_password` ×5 de un anónimo (400, 400, 400, 400, 429), el padre llama a `verify_pin` con su PIN correcto y recibe `429 PIN_LOCKED`.
+  - **Corregido** en CAM-005: la recuperación tiene contadores propios (`reset_*`). Con el mismo ataque, el padre recibe `verify_pin` → `200`.
+  - **Revisión independiente** de `auditor-ciberseguridad`: APROBADA CON OBSERVACIONES. Ver CAM-005.
 
 ## INC-006 — Sin límite de intentos en login ni en registro
 - **Gravedad**: Media · **Estado**: Abierta · **Área**: autenticación
@@ -142,7 +162,7 @@ Este registro recoge solo incidencias de este proyecto. Si algo afecta a otro pr
 - **Impacto**: bajo.
 
 ## INC-014 — Despliegue frágil
-- **Gravedad**: Alta · **Estado**: Abierta · **Área**: operación / despliegue
+- **Gravedad**: Alta · **Estado**: Verificada. Por decisión del usuario (19/11/2026, «Esperar a Render»), se cerrará cuando confirme que el primer despliegue en Render arranca bien · **Área**: operación / despliegue
 - **Archivos afectados**:
   - `server.ts:31`: puerto 3000 fijo, sin `process.env.PORT` [C];
   - `server.ts:4` y `:841`: Vite se importa siempre y el modo desarrollo se activa salvo que `NODE_ENV=production` [C];
@@ -152,6 +172,20 @@ Este registro recoge solo incidencias de este proyecto. Si algo afecta a otro pr
 - **Escenario**: un despliegue en Render sin `PORT=3000` o sin `NODE_ENV` falla o sirve el modo desarrollo. Sin `TURSO_*` o `S3_*`, se pierden los datos o las fotos en cada despliegue.
 - **Evidencia**: estático. La configuración real de Render no se ha verificado [supuesto].
 - **Impacto**: caídas o pérdida de datos.
+- **Seguimiento (19/11/2026)**:
+  - **Corregido** en CAM-007, con alcance completo autorizado por el usuario:
+    - el puerto se toma de `PORT`;
+    - el modo producción queda garantizado: con `npm start --prod`, con `NODE_ENV` o en Render;
+    - Vite solo se carga en desarrollo;
+    - en producción, el servidor no arranca sin `dist/`;
+    - en Render, no arranca sin Turso o sin S3.
+  - **Pruebas** [ejecutado, copia aislada]: escenarios A–F en PASS (ver CAM-007).
+  - **NOT TESTED**: el primer despliegue real en Render.
+  - **Pendiente fuera de alcance**:
+    - `tsx` en producción;
+    - versionar la configuración (`render.yaml`);
+    - endpoint `/health`.
+  - **Revisión independiente** de `arquitecto-software`: APROBADA CON OBSERVACIONES.
 
 ## INC-015 — Esquema sin migraciones, sin claves foráneas y sin índices base
 - **Gravedad**: Alta · **Estado**: Abierta · **Área**: base de datos / arquitectura
@@ -219,3 +253,37 @@ Este registro recoge solo incidencias de este proyecto. Si algo afecta a otro pr
 - **Escenario**: ninguna corrección se puede verificar con una batería de regresión.
 - **Evidencia**: estático.
 - **Impacto**: riesgo de regresiones en cada cambio.
+
+## INC-022 — Dependencias con vulnerabilidades conocidas
+- **Gravedad**: Alta · **Estado**: Cerrada (19/11/2026; el usuario confirmó el cierre con «Sí, ciérrala». Queda 1 vulnerabilidad baja de esbuild como riesgo aceptado) · **Área**: dependencias / seguridad
+- **Archivos afectados**: `package.json` y `package-lock.json`. Las vulnerabilidades directas están en `vite` y `postcss`; el resto son transitivas.
+- **Escenario**:
+  - `proxy-addr` (crítica, GHSA-jqcg-44mw-7w3h): permite falsear la IP con direcciones IPv4 mapeadas en IPv6. El servidor usa `trust proxy` (`server.ts:369`), así que afecta a `req.ip` y `req.secure` y dejaría saltarse un futuro límite de intentos por IP (INC-006).
+  - Altas que afectan al servidor en marcha: `body-parser` (GHSA-v422-hmwv-36x6, GHSA-27r3-jxmh-p828), `path-to-regexp` (GHSA-j3q9-mxjg-w52f, GHSA-27v5-c462-wpq7) y `ws` (GHSA-58qx-3vcg-4xpx, GHSA-96hv-2xvq-fx4p). Provocan denegación de servicio o fuga de memoria.
+  - `qs` (moderada): denegación de servicio.
+  - `vite` (alta): permite leer archivos y saltarse `server.fs.deny` en el servidor de desarrollo, también en Windows. Se agrava con INC-014: si en producción falta `NODE_ENV=production`, se sirve Vite en modo desarrollo.
+  - Solo afectan a la compilación: `postcss`, `@babel/core`, `esbuild`, `picomatch`, `nanoid`, `browserslist`, `source-map-js` y `baseline-browser-mapping`.
+- **Evidencia**: [ejecutado] el 19/11/2026, en la copia aislada, tras `npm ci --ignore-scripts`. Resultado de `npm audit`: «14 vulnerabilidades (2 bajas, 2 moderadas, 9 altas, 1 crítica)», todas con arreglo disponible mediante `npm audit fix`.
+- **Impacto**: suplantación de IP y denegación de servicio en el servidor expuesto, y lectura de archivos si se sirve Vite en modo desarrollo.
+- **Propuesta (sin ejecutar)**: aplicar `npm audit fix` primero en la copia aislada y repetir tsc, build y audit. Cambia `package-lock.json`, así que necesita autorización.
+
+## INC-023 — IDOR en `complete_study_task`: el `childId` validado no es el que se usa
+- **Gravedad**: Media · **Estado**: Cerrada (19/11/2026; el usuario confirmó el cierre con «Sí, ciérralas») · **Área**: autorización / aislamiento
+- **Archivos afectados**:
+  - `server.ts:612-615`: el control de familia de `/api_study.php` valida `req.query.childId || data.childId`, es decir, el de la URL si viene [C].
+  - `server.ts:652` y `:659-661`: `complete_study_task` busca la tarea, la marca como hecha, da los puntos (`awardActivity`) y crea el repaso (`addReviewTopic`) con `String(data.childId)`, el del cuerpo de la petición [C].
+- **Escenario**: un usuario con sesión envía en la URL el `childId` de un hijo suyo y en el cuerpo el `childId` y el `id` de una tarea de otra familia. La validación pasa con el hijo propio, pero la tarea ajena se marca como completada con el resumen y la valoración que mande el atacante. Además, se dan puntos y se crea un repaso al niño de la otra familia.
+- **Evidencia**: [estático]. Lo detectó `auditor-ciberseguridad` en la revisión de CAM-003 y el director lo comprobó leyendo el código. Sin prueba ejecutada; requiere conocer el `id` de la tarea y el `childId` ajenos.
+- **Impacto**: se manipulan las tareas de estudio, los puntos y el repaso de otra familia, que además ve un resumen y una valoración falsos.
+- **Corrección orientativa (sin ejecutar)**: usar en todas las acciones de `/api_study.php` un único `childId` ya validado (la variable `cid`), o rechazar la petición si el de la URL y el del cuerpo no coinciden.
+- **Seguimiento (19/11/2026)**:
+  - **Reproducido** [ejecutado] en la copia aislada con el código original, mediante el script `inc023.mjs`. B envió en la URL a su propio hijo y en el cuerpo la tarea y el hijo de A. Respuesta: `200 {"success":true,"points":50}`. La tarea de A quedó `completed` con el resumen «FALSO» y el hijo de A pasó de 0 a 50 puntos.
+  - **Corregido** en CAM-004. Tras la corrección:
+    - el ataque devuelve `404 {"error":"Perfil no encontrado"}`, la tarea sigue `pending` y los puntos se quedan en 0;
+    - A completa su propia tarea con `200` y recibe 50 puntos.
+  - **Revisión independiente** de `auditor-ciberseguridad`: APROBADA.
+- **Seguimiento (19/11/2026)**:
+  - **Corregido** en CAM-006 con `npm audit fix --ignore-scripts`. Solo cambia `package-lock.json`; `package.json` no se toca.
+  - **`npm audit` después** [ejecutado, copia aislada]: 1 vulnerabilidad baja, 0 moderadas, 0 altas y 0 críticas.
+  - **Riesgo aceptado (propuesta)**: queda `esbuild` 0.27.4 dentro de `tsx` (GHSA-g7r4-m6w7-qqqr, CVSS 2.5, vector local). Afecta solo al servidor de desarrollo de esbuild, que el proyecto no usa: el modo desarrollo usa Vite, que trae su propio esbuild 0.25.12, fuera del rango vulnerable. Se revisará cuando `tsx` incorpore esbuild 0.28.1 o posterior.
+  - **Revisión independiente** de `auditor-ciberseguridad`: APROBADA CON OBSERVACIONES. Ver CAM-006.

@@ -32,8 +32,9 @@ Las reglas comunes de la cartera (autorización, estados PASS/FAIL, registros, a
 | `docs/equipo/REGISTRO_CAMBIOS.md` | Cambios aplicados |
 
 ## 4. Estado actual (19/11/2026)
-- La auditoría de incorporación (estática) dejó **21 incidencias abiertas**, INC-001 a INC-021, de las que 6 son de gravedad Alta.
-- Compilación, build y `npm audit` están en NOT TESTED: aún no hay copia aislada. No hay pruebas automatizadas.
+- Hay **23 incidencias registradas** (INC-001 a INC-023): 18 abiertas, 5 de ellas de gravedad Alta (INC-003 ya mitigada), 1 verificada pendiente de cierre (INC-014) y 4 cerradas (INC-004, INC-005, INC-022 e INC-023). Ver el registro.
+- Línea base (copia aislada): `tsc` PASS, build PASS, `npm audit` con 1 vulnerabilidad baja aceptada y scripts de prueba de la API en PASS (ver `PRUEBAS_Y_VERIFICACION.md`). No hay pruebas automatizadas en el proyecto.
+- Instalar dependencias siempre con `npm ci`, nunca con `npm install`.
 - Sirve para uso familiar controlado. **No se debe abrir a otras familias** hasta resolver INC-001 a INC-005.
 
 ## 5. Operaciones peligrosas propias de este proyecto
@@ -41,6 +42,14 @@ Las reglas comunes de la cartera (autorización, estados PASS/FAIL, registros, a
 - `npm run dev` y `npm start` crean y alteran tablas al arrancar, sobre la base de datos que indique `.env` (Turso real si está configurado). Las pruebas se hacen solo en copia aislada, con `DB_FILE` temporal y sin `TURSO_*` ni `S3_*`.
 - Servicios reales: Turso, Cloudflare R2 (fotos y copias), Anthropic (cuesta dinero por uso) y Google Books. No se usan en pruebas: se pone `TUTOR_PROVIDER=mock`.
 - Despliegue: Render, desde la rama `main`. La configuración no está versionada en el repositorio [NV]: confirmarla con el usuario.
+- **Requisitos de Render** (desde CAM-007, en producción el servidor se detiene con un mensaje `[ARRANQUE]` en el log si falta algo):
+  - Comando de build: debe instalar con `npm ci` y ejecutar `npm run build` para generar `dist/`. Ejemplo: `npm ci && npm run build`.
+  - Comando de arranque: `npm start`, que ya incluye `--prod`.
+  - `PORT`: no fijarla; la asigna Render.
+  - Variables obligatorias: `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID` y `S3_SECRET_ACCESS_KEY`. Además, `ANTHROPIC_API_KEY` para la IA.
+  - Las vistas previas y los servicios secundarios de Render necesitan las mismas variables.
+  - Gestor de paquetes: debe ser npm. El `bun.lock` está desactualizado (INC-019).
+- En local, `npm start` exige haber ejecutado antes `npm run build`. `npm run dev` no cambia.
 
 ## 6. Dependencias con otros proyectos
 - No se conoce ninguna. Ver `C:\DESARROLLO\00_COORDINACION\DEPENDENCIAS.md`. Contratos importados: ninguno.
