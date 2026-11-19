@@ -88,14 +88,24 @@ const PERSONAL_NOTE = 'Un consejo: no hace falta que me digas datos personales (
 // -----------------------------------------------------------------------------
 // Instrucciones del tutor
 // -----------------------------------------------------------------------------
-const systemPrompt = (child: { name: string; grade: string; country?: string }, subject: string, region: string) => {
-  const country = child.country && child.country !== 'España' ? child.country : null;
-  return `Eres "EduAmigo", un tutor de estudio para niños y adolescentes en España. Hablas con ${child.name}, que está en ${child.grade}. Asignatura: ${subject || 'la que diga el alumno'}. ${isFpGrade(child.grade) ? `${fpContextLine(child.grade)} Currículo de referencia: el del título de FP (real decreto y currículo de ${region || 'España'}).` : `Currículo de referencia: LOMLOE, ${region || 'España'}.`}
+// Minimización de datos (INC-001): la IA no recibe el nombre del niño ni su país de raíces.
+// Usa el marcador NAME_TOKEN y el servidor lo cambia por el nombre real antes de mostrar la respuesta.
+const NAME_TOKEN = '{NOMBRE}';
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** Sustituye el nombre del niño (palabra completa, sin distinguir mayúsculas) por el marcador antes de enviar texto a la IA. */
+const maskName = (text: string, name: string) => {
+  const n = String(name || '').trim();
+  if (n.length < 2) return text;
+  return text.replace(new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(n)}(?![\\p{L}\\p{N}])`, 'giu'), NAME_TOKEN);
+};
+const unmaskName = (text: string, name: string) => text.split(NAME_TOKEN).join(String(name || '').trim() || 'campeón');
+
+const systemPrompt = (child: { grade: string }, subject: string, region: string) => {
+  return `Eres "EduAmigo", un tutor de estudio para niños y adolescentes en España. Hablas con un alumno de ${child.grade}. Si quieres llamarle por su nombre, escribe exactamente ${NAME_TOKEN} (la aplicación lo cambia por su nombre real); no le preguntes cómo se llama. Asignatura: ${subject || 'la que diga el alumno'}. ${isFpGrade(child.grade) ? `${fpContextLine(child.grade)} Currículo de referencia: el del título de FP (real decreto y currículo de ${region || 'España'}).` : `Currículo de referencia: LOMLOE, ${region || 'España'}.`}
 
 QUIÉN ERES
 - Eres una inteligencia artificial, no una persona. Si te preguntan, dilo con naturalidad.
 - Tono cercano, paciente y alegre. Frases cortas. Vocabulario adecuado a ${child.grade}. Puedes usar algún emoji, sin abusar.
-${country ? `- ${child.name} tiene raíces en ${country}: cuando ayude, usa ejemplos cotidianos de ${country} (comida, lugares, costumbres), con respeto y sin estereotipos. Mantén la terminología escolar de España.` : ''}
 
 CÓMO ENSEÑAS (MUY IMPORTANTE)
 - Por defecto GUÍAS, no resuelves: haz una pregunta o da UNA pista cada vez para que el alumno avance por sí mismo. Comprueba lo que ya sabe.
@@ -135,10 +145,9 @@ setMockHandler('tutor', (system, messages) => {
     ? lastMsg.content
     : (lastMsg?.content || []).map((b: any) => (b.type === 'text' ? b.text : '[imagen]')).join(' ');
   const mode = last.includes('explicación completa') ? 'explain' : last.includes('de OTRA forma') ? 'other_way' : 'guided';
-  const country = (system.match(/raíces en ([^:]+):/) || [])[1];
   const hasImage = messages.some(m => Array.isArray(m.content) && m.content.some((b: any) => b.type === 'image'));
   const visible = last.split('\n\n[Instrucción del sistema')[0];
-  return `[simulado:${mode}${country ? `:${country}` : ''}${hasImage ? ':foto' : ''}] Pista para "${visible.slice(0, 80)}": ¿qué sabes ya de esto?`;
+  return `[simulado:${mode}${hasImage ? ':foto' : ''}] ${NAME_TOKEN}, pista para "${visible.slice(0, 80)}": ¿qué sabes ya de esto?`;
 });
 
 // Limpieza de la respuesta: sin enlaces (el niño no debe salir a webs desconocidas)
@@ -318,7 +327,7 @@ export async function registerTutorRoutes(app: express.Express, deps: TutorDeps)
           }
           const lastIdx = rows.length - 1;
           const history: ChatMsg[] = rows.map((r: any, i: number) => {
-            let text = r.content;
+            let text = maskName(String(r.content || ''), child.name); // el nombre del niño no sale hacia la IA
             if (i === lastIdx && r.role === 'user') text += MODE_INSTRUCTION[mode] || ''; // instrucción del botón pulsado
             if (r.photo_id && photoBlock) {
               text = `[El alumno ha enviado una foto del ejercicio. Ayúdale a entender cómo hacerlo, paso a paso y sin resolverlo por él.]\n${text}`;
@@ -330,7 +339,7 @@ export async function registerTutorRoutes(app: express.Express, deps: TutorDeps)
           while (history.length && history[0].role !== 'user') history.shift();
           try {
             const ai = await callClaude({ system: systemPrompt(child, subject, region), messages: history, model: TUTOR_MODEL(), maxTokens: 700, task: 'tutor' });
-            reply = sanitizeOutput(ai.text) || 'Vaya, no se me ha ocurrido nada. ¿Me lo preguntas de otra forma?';
+            reply = unmaskName(sanitizeOutput(ai.text), child.name) || 'Vaya, no se me ha ocurrido nada. ¿Me lo preguntas de otra forma?';
             usage = ai;
           } catch (e) {
             // Se borra la pregunta para que no cuente en el límite si el tutor no ha respondido

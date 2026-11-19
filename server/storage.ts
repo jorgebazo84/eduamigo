@@ -63,14 +63,50 @@ export async function getObject(key: string): Promise<Buffer | null> {
   try { return await fs.promises.readFile(path.join(localDir(), key)); } catch { return null; }
 }
 
-export async function deleteObject(key: string) {
+/** Borra un archivo. Devuelve true si ya no existe (borrado o no estaba) y false si el borrado ha fallado. */
+export async function deleteObject(key: string): Promise<boolean> {
   safeKey(key);
   const remote = s3();
   if (remote) {
-    await remote.client.fetch(`${remote.base}/${key}`, { method: 'DELETE' }).catch(() => {});
-    return;
+    try {
+      const res = await remote.client.fetch(`${remote.base}/${key}`, { method: 'DELETE' });
+      return res.ok || res.status === 404;
+    } catch { return false; }
   }
-  await fs.promises.unlink(path.join(localDir(), key)).catch(() => {});
+  try {
+    await fs.promises.unlink(path.join(localDir(), key));
+    return true;
+  } catch (e: any) {
+    return e?.code === 'ENOENT';
+  }
+}
+
+/**
+ * Borra un archivo y, si falla, lo deja en la cola pending_object_deletions para reintentarlo (INC-002).
+ * Así un fallo puntual del almacenamiento no deja fotos o audios de un niño borrado.
+ */
+export async function deleteObjectOrQueue(db: any, key: string): Promise<boolean> {
+  if (await deleteObject(key)) return true;
+  await db.prepare('INSERT OR IGNORE INTO pending_object_deletions (object_key, created_at, attempts) VALUES (?, ?, 0)').run(key, Date.now());
+  return false;
+}
+
+/** Reintenta los borrados de archivos que fallaron. */
+export async function retryPendingDeletions(db: any) {
+  const rows = await db.prepare('SELECT object_key FROM pending_object_deletions ORDER BY created_at LIMIT 500').all();
+  let done = 0;
+  for (const r of rows) {
+    let ok = false;
+    try { ok = await deleteObject(r.object_key); } catch { ok = false; } // una clave errónea no bloquea la cola
+    if (ok) {
+      await db.prepare('DELETE FROM pending_object_deletions WHERE object_key = ?').run(r.object_key);
+      done++;
+    } else {
+      await db.prepare('UPDATE pending_object_deletions SET attempts = attempts + 1 WHERE object_key = ?').run(r.object_key);
+    }
+  }
+  if (rows.length) console.log(`[FOTOS] Reintento de borrados pendientes: ${done}/${rows.length} hechos`);
+  return { done, pending: rows.length - done };
 }
 
 /** Convierte un data URL / base64 en Buffer comprobando tipo y tamaño. */
@@ -125,6 +161,11 @@ export async function initPhotoStorage(db: any) {
       expires_at BIGINT NOT NULL,
       deleted INTEGER DEFAULT 0
     );
+    CREATE TABLE IF NOT EXISTS pending_object_deletions (
+      object_key VARCHAR(255) PRIMARY KEY,
+      created_at BIGINT NOT NULL,
+      attempts INTEGER DEFAULT 0
+    );
   `);
   if (!warned && process.env.NODE_ENV === 'production' && storageMode() === 'local') {
     warned = true;
@@ -140,6 +181,7 @@ export async function purgeExpiredPhotos(db: any) {
     await db.prepare('UPDATE photos SET deleted = 1 WHERE id = ?').run(r.id);
   }
   if (rows.length) console.log(`[FOTOS] ${rows.length} foto(s) caducada(s) borrada(s) (retención ${RETENTION_DAYS()} días)`);
+  await retryPendingDeletions(db).catch((e) => console.error('[FOTOS] Reintento de borrados:', e?.message || e));
   return rows.length;
 }
 

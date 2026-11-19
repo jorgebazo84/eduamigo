@@ -22,6 +22,229 @@ Aquí se anota cada cambio autorizado y aplicado en este proyecto, del más reci
 
 ## Cambios
 
+### CAM-012 — Protección CSRF: sin escrituras por GET y rechazo de escrituras de otra web (INC-008)
+- **Fecha**: 2026-11-19
+- **Incidencia(s)**: INC-008. También quita a CAM-009 (borrado irreversible de perfiles) el agravante señalado por la revisión de seguridad.
+- **Autorización**: el 19/11/2026 el usuario respondió «Sí, adelante» al plan de INC-008.
+- **Agente(s)**: implementó el director de proyecto; revisó `auditor-ciberseguridad`.
+- **Archivos modificados**:
+  - `server/securityHeaders.ts`, dos funciones nuevas:
+    - `readOnlyByGet()`: en una ruta con `?action=`, por GET/HEAD solo deja pasar las acciones de lectura indicadas (el resto da 405, con la cabecera `Allow: POST, DELETE`);
+    - `rejectCrossSiteWrites`: en métodos distintos de GET, HEAD y OPTIONS, rechaza con 403 (código `CROSS_SITE`) si llega `Sec-Fetch-Site: cross-site`, si `Origin` es `null` o si el host de `Origin` no es el de la cabecera `Host`. Cada rechazo se registra en el log como `[CSRF]`, con el motivo, la ruta, `Origin` y `Host`.
+  - `server.ts`:
+    - `rejectCrossSiteWrites` se monta para todas las rutas;
+    - `/api.php` solo admite `get_initial_data` por GET, y `/api_study.php` solo `get_study_data`.
+  - `App.tsx`: `toggle_task` se envía por POST (era la única escritura por GET del cliente).
+- **Motivo**: con la cookie `SameSite=Lax`, un enlace abierto desde otra web podía borrar perfiles, eventos, tareas o libros (el borrado de perfiles es irreversible desde CAM-009).
+- **Riesgos identificados**:
+  - Si un proxy cambiara la cabecera `Host`, la propia app recibiría 403. Se detectaría por la línea `[CSRF]` en el log; está pendiente de comprobar en Render.
+  - Un GET de escritura que usara otro cliente dejaría de funcionar; se revisaron todas las llamadas del cliente.
+- **Pruebas realizadas** (copia aislada):
+  - **`inc008.mjs` con el código original**: 2/12.
+    - GET de `delete_child`, `toggle_task`, `delete_event` y `delete_book` → 200, y se ejecutaban.
+    - `Origin` de otra web aceptado.
+  - **`inc008.mjs` con el código corregido**: 12/12.
+    - Las cuatro acciones por GET dan 405 y no cambian nada.
+    - Las lecturas por GET siguen dando 200.
+    - `DELETE` con `Origin` de otra web, `POST` con `Sec-Fetch-Site: cross-site`, `Origin: null` y login desde otra web: 403.
+    - Mismo `Origin` y peticiones sin `Origin`: funcionan.
+    - El log registra las 4 líneas `[CSRF]`.
+  - **Navegador integrado** (producción):
+    - el registro, las altas de perfiles, la tarea y marcar la tarea por POST se hicieron desde la propia página → 200;
+    - una web atacante en `127.0.0.1:3999` navegó a `…/api.php?action=delete_child&id=…` con la sesión iniciada → **405** («Método no permitido para esta acción.») y el perfil «Ana» siguió;
+    - el borrado legítimo desde el panel de padres funcionó y mostró la confirmación de CAM-009.
+  - **Regresión**: `inc014.sh` (A–F) y `inc002.sh` (10/10, 1/1, 4/4), PASS. `tsc`: salida 0. Build: «✓ built in 8.04s».
+  - Los archivos del proyecto son idénticos a los de la copia probada. Servidores (3000 y 3999) parados.
+- **Revisión independiente**: `auditor-ciberseguridad`, APROBADA CON OBSERVACIONES.
+  - No quedan rutas con efectos por GET.
+  - El formulario de `/admin/avisos` no se ve afectado: es del mismo origen y además exige token.
+  - Aceptar `same-site` es correcto, porque onrender.com es un sufijo público.
+  - Incorporado: el registro `[CSRF]`.
+  - El token de admin en la URL ya está registrado como INC-012.
+- **Cómo revertir**: restaurar `server.ts`, `server/securityHeaders.ts` y `App.tsx` desde `scratchpad/respaldo/antes-CAM-012/`.
+- **Estado**: Aplicado. No se ha hecho commit. Queda pendiente comprobar en Render una escritura real desde la app.
+
+### CAM-011 — Cabeceras de seguridad y CSP (INC-007)
+- **Fecha**: 2026-11-19
+- **Incidencia(s)**: INC-007
+- **Autorización**: el 19/11/2026 el usuario respondió «Sí, adelante» al plan de INC-007.
+- **Agente(s)**: implementó el director de proyecto; revisó `auditor-ciberseguridad`.
+- **Archivos modificados**:
+  - `server/securityHeaders.ts` (nuevo, sin dependencias). Middleware con:
+    - siempre: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy` (cámara y micrófono solo para la propia app; geolocalización, pagos, USB, serie, Bluetooth, HID, sensores y captura de pantalla, desactivados) y `Cross-Origin-Opener-Policy: same-origin`;
+    - solo en producción: `Strict-Transport-Security: max-age=31536000` y la CSP: `default-src 'self'`; `script-src 'self'` más el sha256 de los `<script>` en línea de `dist/index.html`, calculado al arrancar; `style-src 'self' 'unsafe-inline'`; `img-src 'self' data: blob:`; `media-src 'self' blob:`; `font-src`, `connect-src`, `worker-src` y `manifest-src 'self'`; `object-src 'none'`; `base-uri 'self'`; `form-action 'self'`; `frame-ancestors 'none'`.
+  - `server.ts`: monta el middleware tras `trust proxy` y antes de todas las rutas.
+- **Motivo**: evitar que otra web incruste la app (clickjacking) y añadir una segunda barrera frente a XSS.
+- **Riesgos identificados**:
+  - Una CSP estricta puede romper funciones de la app; se ha probado en el navegador real.
+  - HSTS obliga a usar HTTPS: en Render siempre hay HTTPS.
+  - No se añade `upgrade-insecure-requests`: rompería la prueba local en HTTP, y en Render HSTS ya fuerza HTTPS.
+- **Pruebas realizadas** (copia aislada):
+  - **Cabeceras**:
+    - en desarrollo, las básicas sin CSP; en producción, todas;
+    - la huella de la CSP coincide con el script en línea de `dist/index.html` (`zievw6/K6Fyhb…`);
+    - las rutas de la API también llevan las cabeceras.
+  - **Navegador integrado**, en producción con IA simulada:
+    - se registró una familia de prueba, se introdujo el PIN, se dio de alta un perfil y se usó el tutor (que responde con el nombre del niño);
+    - se recorrieron 10 módulos (Mates, Juegos, Biblioteca, Repasar, Caligrafía, Premios, Mi semana, Deberes, Inglés y Lectura) con **0 violaciones de CSP** y 0 imágenes rotas;
+    - el audio `blob:` y las imágenes `data:` y `blob:` cargan;
+    - un `<script>` inyectado **se bloquea**, y es la única violación;
+    - una página de otro origen (puerto 3999) con un `<iframe>` queda bloqueada: «violates … frame-ancestors 'none'».
+  - **Regresión**: `inc014.sh` (A–F) y `inc002.sh` (10/10, 1/1, 4/4), PASS. `prod_smoke`: 6/6, tras quitar `interest-cohort`.
+  - `tsc`: salida 0. Build: «✓ built in 8.49s».
+  - Los archivos del proyecto son idénticos a los de la copia probada. Servidores (3000 y 3999) parados.
+- **Revisión independiente**: `auditor-ciberseguridad`, APROBADA CON OBSERVACIONES.
+  - La CSP es sólida, la huella es estable y HSTS sin `includeSubDomains` es correcto en onrender.com.
+  - Incorporado: se quita `interest-cohort`, que está obsoleta.
+  - El tipo de audio que preguntaba el revisor ya lo fija el servidor por la firma del archivo, con una lista cerrada (`server/storage.ts:152-163`).
+- **Cómo revertir**: restaurar `server.ts` desde `scratchpad/respaldo/antes-CAM-011/` y borrar `server/securityHeaders.ts`.
+- **Estado**: Aplicado. No se ha hecho commit. Queda pendiente comprobar las cabeceras en Render.
+
+### CAM-010 — Límite de intentos y tiempo de respuesta uniforme en /auth.php (INC-006)
+- **Fecha**: 2026-11-19
+- **Incidencia(s)**: INC-006. También refuerza INC-003, con el límite por IP en la recuperación.
+- **Autorización**: el 19/11/2026 el usuario respondió «Sí, adelante» al plan de INC-006.
+- **Agente(s)**: implementó el director de proyecto; revisó `auditor-ciberseguridad`.
+- **Archivos modificados**:
+  - `server/rateLimit.ts` (nuevo): limitador en memoria por ventana fija. Tiene un tope de 10.000 claves y, al llenarse, descarta la más antigua.
+  - `server.ts`, en `/auth.php`:
+    - **inicio de sesión**: por IP + email, 10 fallos cada 15 min (se pone a cero al acertar); por IP, 50 intentos cada 15 min;
+    - **registro**: 5 cada hora por IP (cuentan las altas y los «ya existe»);
+    - **recuperación**: 10 cada 15 min por IP;
+    - al superar un límite responde 429, `RATE_LIMITED`, con la cabecera `Retry-After`;
+    - **hash ficticio**: si el email no existe, se compara igualmente con él;
+    - un email de más de 254 caracteres se trata como vacío.
+- **Motivo**: evitar la fuerza bruta de contraseñas y averiguar qué emails tienen cuenta.
+- **Riesgos identificados**:
+  - **Red compartida** (un colegio): podría topar con los límites por IP.
+  - **Contadores en memoria**: se pierden al reiniciar; vale con una instancia.
+  - **IP fiable solo tras el proxy**: los límites por IP dependen de `trust proxy` = 1 detrás del proxy de Render. Si el servidor se expone sin proxy, la IP se puede falsear.
+- **Pruebas realizadas** (copia aislada; IPs simuladas con `X-Forwarded-For`):
+  - **`inc006.mjs` con el código original**: 1/7.
+    - Sin ningún límite: 11 fallos dan 11 respuestas 400, 6 registros dan 6 respuestas 200.
+    - El tiempo delata las cuentas: 2,6 ms frente a 117 ms.
+  - **`inc006.mjs` con el código corregido**: 7/7.
+    - El fallo 11 da 429, incluso con la contraseña correcta desde esa IP; desde otra IP se entra.
+    - Intento 51 por IP: 429.
+    - Sexto registro: 429.
+    - Undécima recuperación: 429.
+    - Tiempo: 113,2 ms frente a 114,7 ms.
+  - **`ratelimit_tope.mts`**: el tope de claves descarta la más antigua, PASS. Un email de 312 caracteres da 400 en el inicio de sesión y «Introduce un email válido» en el registro.
+  - **Regresión** con una IP aleatoria por petición (`xff_aleatoria.mjs`), para no topar con los límites; los límites no se cambiaron: `inc014.sh` (A–F), `inc002.sh` (10/10, 1/1, 4/4) y salvaguardas (2/2), todo PASS.
+  - `tsc`: salida 0. Build: «✓ built in 7.80s». Los archivos del proyecto son idénticos a los de la copia probada. Servidores parados.
+- **Revisión independiente**: `auditor-ciberseguridad`, APROBADA CON OBSERVACIONES.
+  - Correcto: la IP tras el proxy y el uso del hash ficticio.
+  - Incorporado: el tope de claves y la longitud del email.
+  - Pendiente, anotado en INC-006:
+    - la enumeración residual;
+    - la valoración de subir el límite de registros para redes compartidas.
+- **Cómo revertir**: restaurar `server.ts` desde `scratchpad/respaldo/antes-CAM-010/` y borrar `server/rateLimit.ts`.
+- **Estado**: Aplicado. No se ha hecho commit.
+
+### CAM-009 — Borrado completo de los datos de un niño y limpieza de huérfanos (INC-002)
+- **Fecha**: 2026-11-19
+- **Incidencia(s)**: INC-002. Es también el requisito previo de la fase 3 de INC-001.
+- **Autorización**: el 19/11/2026 el usuario respondió «Sí, con limpieza» al plan de INC-002 (borrado en cascada y limpieza de los datos huérfanos existentes).
+- **Agente(s)**: implementó el director de proyecto; revisaron `especialista-bd-sql` y `auditor-ciberseguridad`.
+- **Archivos modificados**:
+  - `server/childData.ts` (nuevo):
+    - `childTables()` descubre en el esquema las tablas con columna `child_id` o `childId` (hoy 40);
+    - `deleteChildData()` hace lo siguiente:
+      1. comprueba la familia;
+      2. borra primero la fila de `children`;
+      3. borra en una sola transacción (`client.batch`) todas las tablas del niño, más los mensajes del tutor por conversación y las tareas por libro;
+      4. borra sus archivos (fotos, miniaturas y audios);
+    - `purgeOrphanChildData()` limpia los datos de perfiles inexistentes, con dos salvaguardas: no hace nada si `children` está vacía, ni si hay más de `ORPHAN_PURGE_MAX_CHILDREN` perfiles huérfanos (20 por defecto).
+  - `server/storage.ts`:
+    - `deleteObject()` devuelve si ha conseguido borrar el archivo;
+    - nueva tabla `pending_object_deletions`, con `deleteObjectOrQueue()` y `retryPendingDeletions()` (que tolera claves erróneas);
+    - el reintento se ejecuta junto con `purgeExpiredPhotos`, al arrancar y cada 12 h.
+  - `server.ts`:
+    - `delete_child` llama a `deleteChildData()` y devuelve 404 si el perfil no es de la familia;
+    - la limpieza de huérfanos se ejecuta 2 min después de arrancar (configurable con `ORPHAN_PURGE_DELAY_MS`), cuando ya se ha comprobado la copia diaria, y después cada 24 h.
+  - `components/ChildManager.tsx`: la confirmación explica qué se borra y que no se puede deshacer.
+- **Motivo**: derecho de supresión (art. 17 RGPD). Antes, al borrar un perfil quedaban datos en 40 tablas y en sus archivos.
+- **Riesgos identificados**:
+  - El borrado es irreversible, salvo restaurando una copia (30 días).
+  - **Primer despliegue**: la limpieza borrará los datos de perfiles eliminados anteriormente; el log mostrará `[BORRADO] Datos huérfanos: …`. Si hay más de 20 perfiles huérfanos o `children` está vacía, no borra nada y lo avisa en el log.
+- **Pruebas realizadas** (copia aislada, BD temporal y archivos en disco temporal; `inc002.sh`, `inc002.mjs`, `inc002_salvaguardas.sh`, `reintento.mts`):
+  - **Código original**: 7/10. Tras borrar A1 quedaban filas en 40 tablas y 4 archivos. A1 se sembró en las 40 tablas y además por la API (historial y tutor con foto).
+  - **Código corregido**: 10/10.
+    - 40 tablas a 0 y archivos de A1 borrados.
+    - A2 (misma familia) y B1 (otra familia) intactos, con sus archivos.
+    - Sin PIN: 403. Otra familia: 404. En ambos casos no se borra nada.
+    - Un archivo que no se puede borrar va a la cola.
+  - **Reintento**: 1/1. «[FOTOS] Reintento de borrados pendientes: 1/1 hechos».
+  - **Huérfanos**: 4/4.
+    - Se borra un niño inexistente en las 40 tablas, con sus archivos.
+    - A2 y B1 quedan intactos.
+    - Las filas con niño NULL no se tocan.
+  - **Salvaguardas**: 2/2.
+    - Con `children` vacía no se borra nada.
+    - Con 3 huérfanos y máximo 2 no se borra nada.
+  - Tablas con usuario y sin niño: solo `rewards` (premios de la familia) y `sessions`. Se conservan, correctamente.
+  - **Regresión** (`inc014.sh`): PASS. `tsc`: salida 0. Build: «✓ built in 8.18s».
+  - Archivos del proyecto idénticos a los de la copia probada (`cmp`). Servidores parados y puertos libres.
+- **Revisión independiente**:
+  - `especialista-bd-sql`: APROBADA CON OBSERVACIONES. Incorporado:
+    - la salvaguarda con `children` vacía y con demasiados huérfanos;
+    - borrar el perfil primero (carrera);
+    - la limpieza diaria.
+  - `auditor-ciberseguridad`: APROBADA CON OBSERVACIONES. Sin vías para borrar datos ajenos ni inyección SQL; los logs no muestran datos personales. Incorporado: try/catch en el reintento.
+  - **Observaciones no aplicadas** (anotadas en INC-002):
+    - registro de borrados para después de restaurar una copia;
+    - prueba de rollback;
+    - CSRF por GET (INC-008);
+    - borrado de un hermano con el panel abierto (INC-009);
+    - prefijo de la clave del archivo.
+- **Cómo revertir**: restaurar `server.ts`, `server/storage.ts` y `components/ChildManager.tsx` desde `scratchpad/respaldo/antes-CAM-009/` y borrar `server/childData.ts`. **Los datos ya borrados no se recuperan**, salvo restaurando una copia.
+- **Estado**: Aplicado. No se ha hecho commit.
+
+### CAM-008 — Minimización de datos hacia la IA y fuente autoalojada (INC-001, fase 1)
+- **Fecha**: 2026-11-19
+- **Incidencia(s)**: INC-001, fase 1 de 3. La incidencia sigue Abierta.
+- **Autorización**: el 19/11/2026 el usuario respondió «Sí, fase 1» al plan en tres fases, con las opciones recomendadas.
+- **Agente(s)**:
+  - análisis legal: `especialista-legal-es`;
+  - implementación: director de proyecto;
+  - revisión: `auditor-ciberseguridad`.
+- **Archivos modificados**:
+  - `server/tutor.ts`:
+    - el prompt ya no incluye el nombre ni el país de raíces del niño (se elimina la línea «tiene raíces en…»);
+    - nuevo marcador `{NOMBRE}`, con `maskName()`, que enmascara el nombre en el historial que se reenvía a la IA, y `unmaskName()`, que pone el nombre real en la respuesta mostrada;
+    - el modo simulado se adapta al cambio.
+  - `index.html`: se quita el `<link>` a `fonts.googleapis.com`.
+  - `index.tsx`: importa los pesos 300 a 700 de `@fontsource/quicksand`.
+  - `package.json` y `package-lock.json`: se añade `@fontsource/quicksand` 5.3.0, con la versión fijada exacta, licencia OFL-1.1, resuelto en `registry.npmjs.org` con integrity sha512 y sin scripts de instalación.
+  - `index.css` no cambia. Importar la fuente desde allí rompía las rutas de los `.woff2` con Tailwind 4; se comprobó en la build.
+- **Motivo**: minimización de datos (art. 5.1.c RGPD).
+  - El país de raíces puede revelar el origen étnico (art. 9).
+  - El nombre del niño no es necesario para el servicio.
+  - Google Fonts recibía la IP de cada visitante.
+- **Riesgos identificados**:
+  - Riesgo residual de que el nombre llegue a la IA; ver INC-001.
+  - El campo «país» sigue existiendo en el perfil, pero ya no se usa en la IA.
+- **Pruebas realizadas** (copia aislada; el `fetch` a `api.anthropic.com` se intercepta con `capture_ai.mjs` y devuelve una respuesta falsa, y cualquier otra petición externa queda bloqueada):
+  - `inc001.mjs` con el código original: **2/7**. Llegaban a la IA el nombre «Lucía» y el país «Marruecos».
+  - `inc001.mjs` con el código corregido: **7/7**.
+    - Sin nombre ni país en el sistema, en los mensajes ni en el historial reenviado.
+    - «banana» y «ananá» quedan intactas con una niña llamada «Ana».
+    - El niño ve «¡Muy bien, Lucía!».
+  - **Navegador integrado** (`npm start`): 0 peticiones externas, Quicksand cargada desde `/assets/*.woff2` y la pantalla de acceso se ve correcta.
+  - **Build**: 15 `.woff2` en `dist/` y 0 referencias a Google.
+  - **Regresión** (`inc014.sh`, escenarios A–F, con `inc004`, `inc023`, `inc005` 5/5, `inc003_carrera` y `prod_smoke` 6/6): PASS.
+  - `tsc`: salida 0. Build: «✓ built in 5.05s». `npm audit`: igual que antes (1 baja aceptada).
+  - Los archivos del proyecto son idénticos a los de la copia probada (`cmp`). Servidor parado y puerto 3000 libre.
+- **Revisión independiente**: `auditor-ciberseguridad`, APROBADA CON OBSERVACIONES.
+  - La RegExp es segura: el nombre se escapa y no hay ReDoS.
+  - El nombre no llega a ningún otro prompt; el director lo confirmó con grep en todos los módulos con IA.
+  - Observaciones, no aplicadas:
+    - enmascarar también cada palabra de los nombres compuestos;
+    - validar el nombre al crear el perfil;
+    - indicar en la política que la minimización no es una anonimización.
+- **Cómo revertir**: restaurar los 5 archivos. Hay copia en `scratchpad/respaldo/antes-CAM-008/`; mientras no haya commit, también se puede descartar desde GitHub Desktop.
+- **Estado**: Aplicado. No se ha hecho commit.
+
 ### CAM-007 — Arranque seguro en producción y en Render (INC-014)
 - **Fecha**: 2026-11-19
 - **Incidencia(s)**: INC-014

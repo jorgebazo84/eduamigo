@@ -277,7 +277,7 @@ const App: React.FC = () => {
   const handleToggleTask = async (id: string) => {
     setTasks(tasks.map(t => t.id === id ? { ...t, completed: !t.completed } : t));
     if (userRole !== 'demo' && userId) {
-      await fetch(`api.php?action=toggle_task&id=${id}`);
+      await fetch(`api.php?action=toggle_task&id=${id}`, { method: 'POST' });
     }
   };
 

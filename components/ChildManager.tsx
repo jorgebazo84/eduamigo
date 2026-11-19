@@ -183,7 +183,7 @@ const ChildManager: React.FC<ChildManagerProps> = ({ children, onAddChild, onUpd
               </button>
               <button 
                 onClick={() => {
-                  if (window.confirm(`¿Estás seguro de que quieres eliminar a ${child.name}?`)) {
+                  if (window.confirm(`¿Eliminar el perfil de ${child.name}?\n\nSe borrarán para siempre su progreso, sus puntos y premios, sus conversaciones con el tutor, sus fichas y deberes, y todas sus fotos y grabaciones.\n\nNo se puede deshacer.`)) {
                     onDeleteChild(child.id);
                   }
                 }}

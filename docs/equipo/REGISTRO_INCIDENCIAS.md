@@ -20,14 +20,14 @@ Este registro recoge solo incidencias de este proyecto. Si algo afecta a otro pr
 
 | ID | Gravedad | Estado | Título | Evidencia |
 |---|---|---|---|---|
-| INC-001 | Alta | Abierta | Datos de menores sin base de cumplimiento (privacidad, consentimiento, borrado de cuenta, IA externa) | estático + supuesto |
-| INC-002 | Alta | Abierta | Al borrar un hijo no se borran sus datos asociados ni sus fotos | estático |
+| INC-001 | Alta | Abierta (fase 1 de 3 hecha, CAM-008) | Datos de menores sin base de cumplimiento (privacidad, consentimiento, borrado de cuenta, IA externa) | estático + ejecutado |
+| INC-002 | Alta | Cerrada | Al borrar un hijo no se borran sus datos asociados ni sus fotos | ejecutado (CAM-009) |
 | INC-003 | Alta | Abierta (mitigada en CAM-005) | La contraseña se restablece solo con email y PIN de 4 cifras; ya tiene bloqueo progresivo, falta recuperación por email | estático + ejecutado |
 | INC-004 | Media | Cerrada | IDOR de escritura en `save_history` | ejecutado (CAM-003) |
 | INC-005 | Media | Cerrada | Un anónimo puede bloquear el PIN de una cuenta ajena | ejecutado (CAM-005) |
-| INC-006 | Media | Abierta | Sin límite de intentos en login ni en registro; se puede saber qué emails tienen cuenta | estático |
-| INC-007 | Media | Abierta | Sin cabeceras de seguridad (CSP, X-Frame-Options, Referrer-Policy) | estático |
-| INC-008 | Baja | Abierta | CSRF por GET en `/api.php` y `/api_study.php` | estático |
+| INC-006 | Media | Cerrada | Sin límite de intentos en login ni en registro; se puede saber qué emails tienen cuenta | ejecutado (CAM-010) |
+| INC-007 | Media | Verificada | Sin cabeceras de seguridad (CSP, X-Frame-Options, Referrer-Policy) | ejecutado (CAM-011) |
+| INC-008 | Baja | Verificada | CSRF por GET en `/api.php` y `/api_study.php` | ejecutado (CAM-012) |
 | INC-009 | Baja | Abierta | Huecos en la separación entre niño y adulto | estático |
 | INC-010 | Baja | Abierta | Puntos que dependen de datos enviados por el cliente | estático |
 | INC-011 | Baja | Abierta | Posible carrera en las peticiones de premios | supuesto |
@@ -52,13 +52,44 @@ Este registro recoge solo incidencias de este proyecto. Si algo afecta a otro pr
 - **Escenario**: se tratan nombre y curso de menores, fotos de deberes, audios de lectura, conversaciones con el tutor (incluidas señales de riesgo), notas escolares y circulares. No hay política de privacidad, consentimiento de los padres ni forma de borrar la cuenta. Los datos se envían a proveedores de EE. UU. (Anthropic y Cloudflare).
 - **Evidencia**: búsqueda de `privacidad|RGPD|consentim|delete_account` sin resultados [estático]. La valoración legal concreta está pendiente de `especialista-legal-es` [supuesto].
 - **Impacto**: incumplimiento del RGPD y la LOPDGDD si se abre a familias ajenas; riesgo reputacional.
+- **Análisis legal (19/11/2026, `especialista-legal-es`)**: es orientación, no dictamen; las normas se citaron de memoria, sin consultar las fuentes en la sesión.
+  - **Obligatorio antes de abrir a otras familias**:
+    - información según el art. 13 RGPD y aviso legal (LSSI);
+    - consentimiento parental por debajo de 14 años (art. 8 RGPD, art. 7 LOPDGDD);
+    - contratos de encargado (art. 28) con Anthropic, Cloudflare, Turso y Render, y garantías para las transferencias a EE. UU.;
+    - borrado de cuenta completo (art. 17) y exportación de datos (arts. 15 y 20);
+    - EIPD (art. 35) y registro de actividades (art. 30).
+  - **Requiere abogado colegiado**: el consentimiento de los mayores de 14, el deber de comunicación según la LOPIVI, la clasificación según el Reglamento de IA (UE) 2024/1689 y la vigencia del marco de transferencias UE-EE. UU.
+- **Plan en 3 fases** (aprobado el 19/11/2026):
+  - **Fase 1** (código de minimización): hecha en CAM-008.
+  - **Fase 2** (consentimiento y páginas legales): pendiente de los textos del titular.
+  - **Fase 3** (borrado de cuenta y exportación): después de INC-002.
+- **Seguimiento (19/11/2026), fase 1 en CAM-008**:
+  - **Corregido**: el tutor ya no envía a la IA el nombre del niño ni el país de raíces, y la fuente se sirve desde la propia app.
+  - **Pruebas** [ejecutado]: `inc001.mjs` da 2/7 con el código original y 7/7 con el corregido. En el navegador, la app hace 0 peticiones externas.
+  - **Riesgo residual (revisión de `auditor-ciberseguridad`)**:
+    - no se enmascaran las partes de un nombre compuesto, los apellidos, los apodos ni los nombres de 1 letra;
+    - el nombre puede llegar a la IA dentro de texto libre en otros módulos o en las fotos (cuadernos, circulares).
+
+    La minimización reduce la exposición pero no la elimina: hay que indicarlo en la política.
+  - **Estado**: la incidencia sigue **Abierta** hasta completar las fases 2 y 3 y los documentos del titular.
 
 ## INC-002 — Al borrar un hijo no se borran sus datos asociados
-- **Gravedad**: Alta · **Estado**: Abierta · **Área**: base de datos / datos personales
+- **Gravedad**: Alta · **Estado**: Cerrada (19/11/2026; el usuario confirmó el cierre con «Sí, ciérrala». Los pendientes fuera de alcance se indican abajo) · **Área**: base de datos / datos personales
 - **Archivos afectados**: `server.ts:549-551`. `delete_child` borra solo la fila de `children` [C]. No hay ningún `DELETE … WHERE child_id` en `server/` [C].
 - **Escenario**: un padre borra el perfil de su hijo. Se quedan guardados su historial, las fotos y los audios (en R2 o en disco), las conversaciones con el tutor, los puntos, los repasos, las notas y lo demás.
 - **Evidencia**: estático.
 - **Impacto**: no se cumple el derecho de supresión, quedan datos huérfanos y crece el almacenamiento.
+- **Seguimiento (19/11/2026)**:
+  - **Reproducido** [ejecutado] con el código original (`inc002.mjs`): tras borrar A1 quedaban filas en **40 tablas** y 4 archivos.
+  - **Corregido** en CAM-009, con limpieza de los huérfanos existentes autorizada por el usuario. Pruebas [ejecutado]: 10/10, reintento 1/1, huérfanos 4/4 y salvaguardas 2/2.
+  - **Revisiones independientes**: `especialista-bd-sql` y `auditor-ciberseguridad`, ambas APROBADA CON OBSERVACIONES. Las salvaguardas obligatorias que señalaron se incorporaron y se probaron.
+  - **Pendiente fuera de alcance**:
+    - **Copias de seguridad**: los datos borrados siguen hasta 30 días en las copias y en el punto de restauración de Turso. Si se restaura una copia, reaparecen: falta un registro de borrados que se vuelva a aplicar tras restaurar.
+    - **Fallo a mitad de transacción**: el rollback forzado no está probado (NOT TESTED).
+    - **CSRF por GET**: el borrado irreversible agrava INC-008.
+    - **Panel desbloqueado**: un hermano podría borrar otro perfil (ver INC-009).
+    - **Prefijo de la clave del archivo**: falta comprobarlo antes de borrar (defensa en profundidad).
 
 ## INC-003 — Contraseña restablecible con email y PIN de 4 cifras
 - **Gravedad**: Alta · **Estado**: Abierta · **Área**: autenticación
@@ -100,25 +131,63 @@ Este registro recoge solo incidencias de este proyecto. Si algo afecta a otro pr
   - **Revisión independiente** de `auditor-ciberseguridad`: APROBADA CON OBSERVACIONES. Ver CAM-005.
 
 ## INC-006 — Sin límite de intentos en login ni en registro
-- **Gravedad**: Media · **Estado**: Abierta · **Área**: autenticación
+- **Gravedad**: Media · **Estado**: Cerrada (19/11/2026; el usuario confirmó el cierre con «Sí, ciérrala». El riesgo aceptado o pendiente se detalla abajo) · **Área**: autenticación
 - **Archivos afectados**: no hay limitador en todo el servidor [C]. El registro avisa de que ya existe una cuenta con ese email (`server.ts:402`). El login no ejecuta bcrypt si el usuario no existe y responde más rápido (`:413`).
 - **Escenario**: se pueden probar contraseñas por fuerza bruta y averiguar qué emails tienen cuenta.
 - **Evidencia**: estático.
 - **Impacto**: riesgo de que se adivinen contraseñas y de que se filtre quién es usuario.
+- **Seguimiento (19/11/2026)**:
+  - **Reproducido** [ejecutado] con el código original (`inc006.mjs`), resultado 1/7:
+    - no había ningún límite;
+    - el tiempo de respuesta delataba las cuentas: 2,6 ms si el email no existe frente a 117 ms si existe.
+  - **Corregido** en CAM-010:
+    - límites por IP + email y por IP en el inicio de sesión, por IP en el registro y por IP en la recuperación;
+    - bcrypt con hash ficticio, para que el tiempo sea igual exista o no la cuenta.
+    - Resultado: 7/7, con 113 frente a 115 ms.
+  - **Revisión independiente** de `auditor-ciberseguridad`: APROBADA CON OBSERVACIONES. Se incorporaron el tope de memoria y la longitud máxima del email.
+  - **Riesgo aceptado o pendiente**:
+    - el registro sigue diciendo «Ya existe una cuenta»: se resolvería con verificación por email, igual que INC-003;
+    - `reset_password` da 429 en lugar de 400 solo si la cuenta existe y ya está bloqueada;
+    - los límites por IP solo son fiables detrás del proxy de Render (`trust proxy` = 1);
+    - una red compartida (un colegio) podría topar con los 5 registros por hora.
 
 ## INC-007 — Sin cabeceras de seguridad
-- **Gravedad**: Media · **Estado**: Abierta · **Área**: configuración / seguridad web
+- **Gravedad**: Media · **Estado**: Verificada. Por decisión del usuario (19/11/2026, «Esperar a Render»), se cerrará cuando confirme que en Render llegan las cabeceras y no hay violaciones de CSP en la consola · **Área**: configuración / seguridad web
 - **Archivos afectados**: `server.ts`. No hay `helmet`, CSP, X-Frame-Options ni Referrer-Policy [C].
 - **Escenario**: la app se puede incrustar en otra web (clickjacking) y no hay una segunda barrera contra XSS.
 - **Evidencia**: estático.
 - **Impacto**: riesgo acotado; ahora mismo no hay XSS conocido.
+- **Seguimiento (19/11/2026)**:
+  - **Corregido** en CAM-011:
+    - en todas las respuestas: nosniff, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy` y COOP;
+    - en producción, además: HSTS y una CSP con la huella del script en línea, calculada al arrancar.
+  - **Pruebas** [ejecutado, en el navegador real]:
+    - la app completa funciona sin violaciones de CSP;
+    - un script inyectado se bloquea;
+    - una web de otro origen no puede incrustar la app.
+  - **Revisión independiente** de `auditor-ciberseguridad`: APROBADA CON OBSERVACIONES, ninguna bloqueante.
+  - **Pendiente**:
+    - comprobar las cabeceras y la consola tras el primer despliegue en Render;
+    - `'unsafe-inline'` en los estilos, por los estilos en línea de React: es un riesgo aceptado.
 
 ## INC-008 — CSRF por GET en `/api.php` y `/api_study.php`
-- **Gravedad**: Baja · **Estado**: Abierta · **Área**: seguridad web
+- **Gravedad**: Baja · **Estado**: Verificada. Por decisión del usuario (19/11/2026, «Esperar a Render»), se cerrará cuando confirme que en Render las escrituras desde la app funcionan sin líneas `[CSRF]` con su dominio · **Área**: seguridad web
 - **Archivos afectados**: `server.ts:490` y `:603`. Usan `app.all`, que acepta también GET, y las acciones leen `id` de la URL [C].
 - **Escenario**: un padre con el panel desbloqueado abre un enlace externo a `/api.php?action=delete_child&id=X`. Como la cookie es SameSite=Lax, el navegador la envía en esa navegación y el borrado se ejecuta [A]. El atacante necesita conocer el id.
 - **Evidencia**: estático.
 - **Impacto**: borrado de datos. Escenario poco probable.
+- **Seguimiento (19/11/2026)**:
+  - **Reproducido** [ejecutado] con el código original (`inc008.mjs`), resultado 2/12:
+    - un GET borra perfil, evento y libro, y marca una tarea;
+    - se aceptan peticiones con `Origin` de otra web.
+  - **Corregido** en CAM-012:
+    - en esas rutas, solo las lecturas se aceptan por GET (el resto da 405);
+    - se rechazan las escrituras que vienen de otra web (403);
+    - `toggle_task` va por POST.
+    - Resultado: 12/12.
+  - **Ataque real en el navegador** [ejecutado]: una web de otro origen llevó el navegador, con la sesión de padres iniciada, a la URL de borrado. Respuesta: **405**, y el perfil sigue.
+  - **Revisión independiente** de `auditor-ciberseguridad`: APROBADA CON OBSERVACIONES. Se incorporó el registro `[CSRF]` de cada rechazo.
+  - **Pendiente**: comprobar en Render una escritura real desde la app; si apareciera `[CSRF] … Origin distinto del Host` con el dominio propio, revisar el proxy.
 
 ## INC-009 — Huecos en la separación entre niño y adulto
 - **Gravedad**: Baja · **Estado**: Abierta · **Área**: autorización

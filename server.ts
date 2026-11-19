@@ -22,6 +22,9 @@ import { registerWorksheetRoutes } from './server/worksheets';
 import { registerGamesRoutes } from './server/games';
 import { isValidGrade } from './shared/grades';
 import { storageMode } from './server/storage';
+import { deleteChildData, purgeOrphanChildData } from './server/childData';
+import { createLimiter, rateLimitMessage } from './server/rateLimit';
+import { securityHeaders, rejectCrossSiteWrites, readOnlyByGet } from './server/securityHeaders';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -401,6 +404,10 @@ async function startServer() {
     };
 
   app.set('trust proxy', 1);
+  // Las escrituras que vienen de otra web se rechazan (INC-008)
+  app.use(rejectCrossSiteWrites);
+  // Cabeceras de seguridad en todas las respuestas (INC-007). La CSP y HSTS, solo en producción.
+  app.use(securityHeaders({ production: IS_PROD, indexHtmlPath: IS_PROD ? path.join(process.cwd(), 'dist', 'index.html') : undefined }));
   // Las rutas que reciben fotos (ya comprimidas en el móvil) aceptan hasta 8 MB; el resto, 100 KB.
   const bigJson = express.json({ limit: '8mb' });
   const smallJson = express.json();
@@ -408,11 +415,27 @@ async function startServer() {
   app.use((req, res, next) => (PHOTO_ROUTES.has(req.path) ? bigJson : smallJson)(req, res, next));
   app.use('/admin', express.urlencoded({ extended: false, limit: '10kb' }));
 
+  // Límites de intentos (INC-006). Inicio de sesión: por IP + email (fallos) y por IP (todos los intentos);
+  // registro: por IP; recuperación de contraseña: por IP (se suma al bloqueo por cuenta de INC-005).
+  const loginPairLimiter = createLimiter(10, 15 * 60 * 1000);
+  const loginIpLimiter = createLimiter(50, 15 * 60 * 1000);
+  const registerIpLimiter = createLimiter(5, 60 * 60 * 1000);
+  const resetIpLimiter = createLimiter(10, 15 * 60 * 1000);
+  // Hash ficticio: si el email no existe se compara igual, para que la respuesta tarde lo mismo.
+  const DUMMY_PASSWORD_HASH = await bcrypt.hash(crypto.randomBytes(16).toString('hex'), 10);
+
   // auth.php: registro, inicio de sesión, PIN parental
   app.post('/auth.php', async (req, res) => {
     const action = String(req.query.action || '');
     const { email, password, parentPin, newPin, newPassword, pin } = req.body || {};
-    const normEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+    // Un email válido no pasa de 254 caracteres; más largo se trata como vacío (y no infla los contadores)
+    const rawEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+    const normEmail = rawEmail.length <= 254 ? rawEmail : '';
+    const ip = String(req.ip || req.socket.remoteAddress || 'desconocida');
+    const tooMany = (ms: number) => {
+      res.setHeader('Retry-After', String(Math.ceil(ms / 1000)));
+      return res.status(429).json({ error: rateLimitMessage(ms), code: 'RATE_LIMITED' });
+    };
 
     // Registra un fallo y bloquea tras PIN_MAX_FAILS intentos, cada vez más tiempo.
     // 'pin' = panel de padres (verify_pin); 'reset' = recuperación de contraseña. Contadores separados:
@@ -442,6 +465,10 @@ async function startServer() {
         if (!normEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normEmail)) throw new Error('Introduce un email válido.');
         const pwErr = validatePassword(password); if (pwErr) throw new Error(pwErr);
         const pinErr = validatePinFormat(parentPin); if (pinErr) throw new Error(pinErr);
+        const regWait = registerIpLimiter.blockedFor(ip);
+        if (regWait) return tooMany(regWait);
+        // Cuentan las altas y las comprobaciones de email ya registrado (frena la enumeración de cuentas)
+        registerIpLimiter.hit(ip);
         const exists = await db.prepare('SELECT id FROM users WHERE lower(email) = ?').get(normEmail);
         if (exists) throw new Error('Ya existe una cuenta con ese email.');
         const id = crypto.randomUUID();
@@ -453,9 +480,18 @@ async function startServer() {
 
       } else if (action === 'login') {
         if (!normEmail || !password) throw new Error('Email y contraseña son obligatorios');
+        const pairKey = `${ip}|${normEmail}`;
+        const wait = Math.max(loginIpLimiter.blockedFor(ip), loginPairLimiter.blockedFor(pairKey));
+        if (wait) return tooMany(wait);
+        loginIpLimiter.hit(ip);
         const user = await db.prepare('SELECT * FROM users WHERE lower(email) = ?').get(normEmail);
-        const ok = user ? await bcrypt.compare(String(password), user.password_hash) : false;
-        if (!ok) return res.status(400).json({ error: 'Credenciales incorrectas' });
+        // Con o sin cuenta se ejecuta bcrypt: el tiempo de respuesta no revela si el email existe
+        const ok = await bcrypt.compare(String(password), user ? user.password_hash : DUMMY_PASSWORD_HASH) && !!user;
+        if (!ok) {
+          loginPairLimiter.hit(pairKey);
+          return res.status(400).json({ error: 'Credenciales incorrectas' });
+        }
+        loginPairLimiter.reset(pairKey);
         await createSession(req, res, user.id);
         res.json({ status: 'success', userId: user.id, email: user.email, needsPinSetup: !user.pin_hash || Number(user.needs_pin_change) === 1 });
 
@@ -507,6 +543,9 @@ async function startServer() {
         // Tiene su propio límite de intentos, separado del panel de padres (INC-005), con bloqueo progresivo (INC-003).
         if (!normEmail || !pin || !newPassword) throw new Error('Datos incompletos para restablecer contraseña');
         const pwErr = validatePassword(newPassword); if (pwErr) throw new Error(pwErr);
+        const resetWait = resetIpLimiter.blockedFor(ip);
+        if (resetWait) return tooMany(resetWait);
+        resetIpLimiter.hit(ip);
         const user = await db.prepare('SELECT * FROM users WHERE lower(email) = ?').get(normEmail);
         if (!user) return res.status(400).json({ error: 'Email o PIN incorrectos' });
         const lockedUntil = Number(user.reset_locked_until) || 0;
@@ -532,7 +571,7 @@ async function startServer() {
   });
 
   // Mock api.php
-  app.all('/api.php', requireSession('api'), async (req, res) => {
+  app.all('/api.php', readOnlyByGet(['get_initial_data']), requireSession('api'), async (req, res) => {
     const action = req.query.action;
     const userId = (req as any).session.userId as string;
     const id = req.query.id as string;
@@ -593,7 +632,9 @@ async function startServer() {
         res.json({ status: 'success' });
       } else if (action === 'delete_child') {
         if (!id) throw new Error('id es obligatorio');
-        await db.prepare('DELETE FROM children WHERE id = ? AND parentId = ?').run(id, userId);
+        // Borra el perfil y TODOS sus datos y archivos (INC-002)
+        const r = await deleteChildData(db, userId, String(id));
+        if (!r) return res.status(404).json({ error: 'Perfil no encontrado' });
         res.json({ status: 'success' });
       } else if (action === 'add_reward') {
         if (!userId || !data.id || !data.title) throw new Error('Datos de premio incompletos');
@@ -646,7 +687,7 @@ async function startServer() {
   });
 
   // Mock api_study.php
-  app.all('/api_study.php', requireSession('api_study'), async (req, res) => {
+  app.all('/api_study.php', readOnlyByGet(['get_study_data']), requireSession('api_study'), async (req, res) => {
     const action = req.query.action;
     const userId = (req as any).session.userId as string;
     const childId = req.query.childId as string | undefined;
@@ -883,6 +924,14 @@ async function startServer() {
   } catch (err) {
     console.error('[COPIA] Error al preparar las copias de seguridad:', err);
   }
+
+  // Limpieza de datos de perfiles ya borrados (INC-002). Se ejecuta unos minutos después de arrancar,
+  // cuando ya ha pasado la comprobación de la copia de seguridad diaria.
+  // Después se repite una vez al día.
+  const orphanDelay = Number(process.env.ORPHAN_PURGE_DELAY_MS);
+  const runOrphanPurge = () => purgeOrphanChildData(db).catch((e) => console.error('[BORRADO] Error en la limpieza de datos huérfanos:', e?.message || e));
+  setTimeout(runOrphanPurge, Number.isFinite(orphanDelay) && orphanDelay >= 0 ? orphanDelay : 2 * 60 * 1000).unref();
+  setInterval(runOrphanPurge, 24 * 3600 * 1000).unref();
 
   // Desarrollo: Vite como middleware (solo se carga aquí, nunca en producción)
   if (!IS_PROD) {

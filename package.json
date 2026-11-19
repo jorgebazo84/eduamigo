@@ -12,6 +12,7 @@
     "restore": "tsx scripts/restore-backup.ts"
   },
   "dependencies": {
+    "@fontsource/quicksand": "5.3.0",
     "@libsql/client": "^0.18.0",
     "@tailwindcss/postcss": "^4.2.1",
     "@types/bcryptjs": "^2.4.6",

@@ -16,6 +16,12 @@ if (typeof window !== 'undefined') {
 import React, { Component, ErrorInfo, ReactNode } from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
+// Fuente Quicksand servida desde la propia app, no desde Google Fonts (INC-001)
+import '@fontsource/quicksand/300.css';
+import '@fontsource/quicksand/400.css';
+import '@fontsource/quicksand/500.css';
+import '@fontsource/quicksand/600.css';
+import '@fontsource/quicksand/700.css';
 import './index.css';
 
 interface ErrorBoundaryProps {
