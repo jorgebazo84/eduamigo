@@ -11,7 +11,8 @@ export type AiContent = string | ({ type: 'text'; text: string } | { type: 'imag
 export type AiMessage = { role: 'user' | 'assistant'; content: AiContent };
 export type AiResult = { text: string; inputTokens: number; outputTokens: number; cacheReadTokens: number };
 
-export class AiUnavailable extends Error {}
+// Nombre propio: así publicErrorMessage nunca muestra al usuario el texto del proveedor de IA (INC-013)
+export class AiUnavailable extends Error { name = 'AiUnavailable'; }
 
 export const TUTOR_MODEL = () => process.env.TUTOR_MODEL || 'claude-haiku-5-5';
 export const VISION_MODEL = () => process.env.VISION_MODEL || 'claude-haiku-5-5';

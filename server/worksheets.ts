@@ -8,6 +8,7 @@
 // - El niño ve qué está mal y una pista; la solución solo la ven los padres (con PIN).
 // - Fotos guardadas 365 días (ver server/storage.ts) y límite diario de correcciones por niño.
 // =============================================================================
+import { publicErrorMessage } from './errors';
 import crypto from 'crypto';
 import { awardActivity } from './rewards';
 import { academicGrade } from '../shared/grades';
@@ -656,7 +657,7 @@ export async function registerWorksheetRoutes(app: express.Express, deps: Worksh
 
       return res.status(400).json({ error: 'Acción no válida' });
     } catch (e: any) {
-      return res.status(400).json({ error: e?.message || 'Error' });
+      return res.status(400).json({ error: publicErrorMessage(e, 'api_worksheets.php') });
     }
   });
 

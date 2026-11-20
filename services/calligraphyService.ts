@@ -15,10 +15,11 @@ const call = async (action: string, body: any) => {
 
 export interface PracticeSheet { title: string; description: string; target: string; difficulty: string; printableContent: string }
 export interface CalligraphyResult {
-  score: number; transcription: string; legibility: string; strokeFeedback: string; spacingFeedback: string;
+  /** Solo en la vista de padres: el niño no recibe la nota numérica (INC-028) */
+  score?: number; transcription: string; legibility: string; strokeFeedback: string; spacingFeedback: string;
   spellingErrors: { wrong: string; right: string }[]; generalFeedback: string; practicePlan: PracticeSheet[];
 }
-export interface CalligraphyRecord { id: string; score: number; analysis: CalligraphyResult; photoUrl: string | null; points: number; at: number }
+export interface CalligraphyRecord { id: string; score?: number; analysis: CalligraphyResult; photoUrl: string | null; points: number; at: number }
 export interface Graphology { observations: string[]; traits: string[]; notice: string }
 
 export const calligraphyService = {

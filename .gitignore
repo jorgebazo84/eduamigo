@@ -23,3 +23,8 @@ dist-ssr
 *.sln
 *.sw?
 eduamigo.db
+
+# Secretos: nunca se suben al repositorio (INC-034). La plantilla .env.example sí.
+.env
+.env.*
+!.env.example

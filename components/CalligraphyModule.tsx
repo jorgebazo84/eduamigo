@@ -67,7 +67,8 @@ const CalligraphyModule: React.FC<Props> = ({ childId, childName, grade, isDemo,
   const showResult = (a: CalligraphyResult, id: string, points?: number) => (
     <div className="space-y-4" data-testid="calligraphy-result">
       <div className="bg-white rounded-[2rem] p-6 border border-indigo-50 flex items-center gap-5">
-        <div className={`w-20 h-20 rounded-2xl flex items-center justify-center text-3xl font-black ${a.score >= 7 ? 'bg-emerald-100 text-emerald-700' : a.score >= 5 ? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'}`} data-testid="calligraphy-score">{a.score}</div>
+        {/* Sin nota numérica para el niño (INC-028): solo los comentarios */}
+        <div className="w-20 h-20 rounded-2xl flex items-center justify-center text-4xl bg-indigo-50" aria-hidden="true">✍️</div>
         <div className="flex-1">
           <p className="font-black text-slate-800">{a.generalFeedback}</p>
           {points !== undefined && <p className="text-xs font-bold text-amber-600">+{points} puntos</p>}
@@ -135,7 +136,7 @@ const CalligraphyModule: React.FC<Props> = ({ childId, childName, grade, isDemo,
               <details key={r.id} className="bg-white rounded-2xl p-4 border border-indigo-50">
                 <summary className="cursor-pointer flex items-center gap-3">
                   {r.photoUrl && <img src={r.photoUrl} alt="" className="w-14 h-14 object-cover rounded-xl" />}
-                  <span className="font-black text-slate-800">Nota {r.score}</span>
+                  <span className="font-black text-slate-800">Práctica de letra</span>
                   <span className="text-xs text-slate-400">{new Date(r.at).toLocaleDateString('es-ES')}</span>
                 </summary>
                 <div className="mt-3">{showResult(r.analysis, r.id)}</div>

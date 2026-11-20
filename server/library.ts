@@ -4,6 +4,7 @@
 //   explicación (se comprueba en el servidor y se descarta lo que no aparece en el texto).
 // - Libros del cole: búsqueda por ISBN (datos del libro en Google Books y el índice buscado en
 //   internet por Claude con su búsqueda web; nunca se inventa) o foto del índice en varias páginas.
+import { publicErrorMessage } from './errors';
 import type express from 'express';
 import { isFpGrade } from '../shared/fpCatalog';
 import { fpContextLine, officialContents } from '../shared/fpCurriculum';
@@ -251,7 +252,7 @@ Busca el índice de este libro. Devuelve JSON: {"found": true|false, "title": ".
         if (raw.length > MAX_INDEX_PAGES) return res.status(400).json({ error: `Como máximo ${MAX_INDEX_PAGES} páginas de índice.` });
         let images;
         try { images = raw.map((x) => { const { buffer, mediaType } = decodeImage(String(x)); return { mediaType, base64: buffer.toString('base64') }; }); }
-        catch (e: any) { return res.status(400).json({ error: e.message }); }
+        catch (e: any) { return res.status(400).json({ error: publicErrorMessage(e, 'api_library.php') }); }
         if ((await usedToday(child.id, 'scan')) >= ISBN_SEARCHES_PER_DAY) return res.status(429).json({ error: 'Hoy ya se han escaneado muchos índices. Prueba mañana.', code: 'DAILY_LIMIT' });
         await logUse(child.id, 'scan');
         let data: any;

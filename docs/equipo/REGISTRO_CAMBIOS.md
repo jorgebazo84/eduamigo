@@ -22,6 +22,56 @@ Aquí se anota cada cambio autorizado y aplicado en este proyecto, del más reci
 
 ## Cambios
 
+### CAM-014 — Bloque rápido: grafología y nota, `.gitignore`, sesión de administración y errores internos (INC-028, INC-034, INC-012, INC-013)
+- **Fecha**: 2026-11-20
+- **Incidencia(s)**:
+  - INC-028;
+  - INC-034, nueva y registrada con esta autorización;
+  - INC-012;
+  - INC-013.
+- **Autorización**: el 20/11/2026 el usuario respondió «Sí, adelante» al plan del bloque rápido.
+- **Agente(s)**: implementó el director de proyecto; revisó `auditor-ciberseguridad`.
+- **Archivos modificados**:
+  - **INC-028**:
+    - `server/calligraphy.ts`: `DEFAULT 0` y `?? 0` para la grafología. Con `withoutScore()`, el niño ya no recibe la nota en `analyze` ni en `history`; `parent_history` mantiene la nota para los padres;
+    - `server.ts`: `add_child` deja la grafología a 0;
+    - `components/CalligraphyModule.tsx`: icono ✍️ en lugar de la nota y «Práctica de letra» en el historial;
+    - `services/calligraphyService.ts`: `score` pasa a ser opcional.
+  - **INC-034**: `.gitignore` añade `.env`, `.env.*` y `!.env.example`.
+  - **INC-012** (`server/parent.ts`):
+    - nuevo `POST /admin/login` (formulario, límite de 10 intentos cada 15 min por IP, comparación en tiempo constante);
+    - cookie `ea_admin` = `exp.HMAC-SHA256(ADMIN_TOKEN)` (httpOnly, SameSite=Strict, Path=/admin, 8 h);
+    - `POST /admin/logout`;
+    - `/admin/avisos` y «revisado» exigen esa sesión;
+    - se elimina el token en la URL y en la cabecera Bearer.
+  - **INC-013**:
+    - `server/errors.ts` (nuevo): `publicErrorMessage()`;
+    - aplicado en `server.ts` (`auth.php`, `api.php`, `api_study.php`), `server/tutor.ts`, `server/worksheets.ts`, `server/calligraphy.ts`, `server/library.ts`, `server/parent.ts` y `server/reading.ts`;
+    - `server/ai.ts`: `AiUnavailable` con nombre propio, para que el texto del proveedor de IA nunca llegue al usuario;
+    - `server.ts`: `parseCookies` ignora las cookies mal formadas.
+- **Motivo**:
+  - bienestar del menor (sin nota y sin grafología por defecto);
+  - evitar subir secretos al repositorio;
+  - que el token de administración no quede en las URL;
+  - no mostrar errores internos al usuario.
+- **Riesgos identificados**:
+  - Los enlaces guardados a `/admin/avisos?token=…` dejan de funcionar; ahora se entra con el formulario.
+  - Una cookie de administración robada vale hasta 8 h; para invalidarla, se cambia `ADMIN_TOKEN`.
+  - En las bases de datos que ya tenían perfiles, la grafología no se ha tocado. En producción no había ninguno.
+- **Pruebas realizadas** (copia aislada; `bloque_rapido.mjs`, `errores_publicos.mts`, `git check-ignore`):
+  - **Código anterior**: 4/16. Se mostraba `SQLITE_CONSTRAINT: UNIQUE constraint failed: children.id`, una cookie mal formada daba 500, la grafología valía 1, el niño veía la nota y se entraba con el token en la URL.
+  - **Código corregido**: 16/16.
+  - **Mensajes de error**: 7/7. Se ocultan los errores de la IA (créditos), de R2 (`HTTP 403`), de SQLite y de programación; los de validación siguen visibles.
+  - **`.gitignore`**: `.env`, `.env.local` y `.env.production` quedan ignorados y `.env.example` no. Con el `.gitignore` anterior, `.env` se habría subido.
+  - **Sin `ADMIN_TOKEN`**: `/admin/avisos` y `/admin/login` dan 404.
+  - **Regresión**: `inc014.sh` (A–F) e `inc002.sh` (10/10, 1/1 y 4/4) en PASS. `tsc`: salida 0. Build: «✓ built in 5.37s».
+  - Los archivos del proyecto son idénticos a los de la copia probada; `server/tutor.ts` solo cambia en el import y en el `catch`, sin el trabajo aparcado de INC-024. Servidores parados.
+- **Revisión independiente**: `auditor-ciberseguridad`, APROBADA CON OBSERVACIONES.
+  - Incorporado: `AiUnavailable` con nombre propio; el filtro de errores aplicado también a caligrafía, biblioteca, circulares y lectura; `HTTP nnn` tratado como error interno.
+  - Anotado: la revocación del lado del servidor y la clase `UserError` como mejora futura.
+- **Cómo revertir**: restaurar los 11 archivos desde `scratchpad/respaldo/antes-CAM-014/` y borrar `server/errors.ts`.
+- **Estado**: Aplicado. No se ha hecho commit.
+
 ### CAM-013 — Aviso y límite de tiempo en la primera conexión con la base de datos (INC-014)
 - **Fecha**: 2026-11-20
 - **Incidencia(s)**: INC-014 (seguimiento del primer despliegue real en Render)

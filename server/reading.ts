@@ -3,6 +3,7 @@
 // - La velocidad (palabras por minuto) se compara con la referencia de su curso (Ripoll et al., 2020).
 // - La voz del niño se guarda 365 días para que la escuchen sus padres (no se envía a ninguna IA).
 // - Puntos: 10 por lectura + 5 por pregunta acertada, máximo 100 al día.
+import { publicErrorMessage } from './errors';
 import type express from 'express';
 import crypto from 'crypto';
 import { READING_LIBRARY, LibraryText, WPM_REFERENCE, bandForLevel, wordCount, QUESTION_LABELS, QuestionType } from '../shared/readingLibrary';
@@ -224,7 +225,7 @@ export async function registerReadingRoutes(app: express.Express, deps: ReadingD
         let audioError: string | null = null;
         if (b.audio) {
           try { audioId = (await saveAudio(db, { userId, childId: child.id, audio: String(b.audio) })).id; }
-          catch (e: any) { audioError = e?.message || 'No se ha podido guardar la grabación'; }
+          catch (e: any) { audioError = publicErrorMessage(e, 'api_reading.php'); }
         }
         const already = await pointsToday(child.id);
         const raw = (counted ? 10 : 0) + 5 * correct;

@@ -3,6 +3,7 @@
 // - Notas del cole guardadas en el servidor, con asignaturas fijas por curso. Una nota baja pasa a Repasar.
 // - «Esto está mal»: avisos de errores de la IA (fichas, deberes, tests…) que el equipo revisa
 //   desde una página privada protegida con ADMIN_TOKEN (junto con los avisos del tutor).
+import { publicErrorMessage } from './errors';
 import type express from 'express';
 import crypto from 'crypto';
 import { addReviewTopic, todayMadrid, addDays } from './review';
@@ -11,6 +12,7 @@ import { decodeImage } from './storage';
 import { streakInfo, startOfTodayMadrid } from './rewards';
 import { subjectsForGrade, TERMS, LOW_GRADE } from '../shared/schoolSubjects';
 import { QUESTION_LABELS } from '../shared/readingLibrary';
+import { createLimiter } from './rateLimit';
 
 type Db = any;
 export interface ParentDeps {
@@ -230,7 +232,7 @@ export async function registerParentRoutes(app: express.Express, deps: ParentDep
       // ------------------------------------------------ foto de una circular o de la fecha de un examen
       if (action === 'scan_circular') {
         let img;
-        try { img = decodeImage(String(b.image || '')); } catch (e: any) { return res.status(400).json({ error: e.message }); }
+        try { img = decodeImage(String(b.image || '')); } catch (e: any) { return res.status(400).json({ error: publicErrorMessage(e, 'api_parent.php') }); }
         const today = todayMadrid();
         let data: any;
         try {
@@ -301,42 +303,83 @@ Si el año no aparece, usa la próxima fecha posible a partir de hoy.`,
   // ---------------------------------------------------------------- página privada del equipo
   // Solo existe si ADMIN_TOKEN está configurado. No muestra nombres ni datos de la familia:
   // solo lo que se marcó como erróneo y el motivo.
-  const tokenOk = (req: express.Request) => {
-    const want = process.env.ADMIN_TOKEN || '';
-    if (want.length < 16) return false;
-    const got = String(req.query.token || (req.headers.authorization || '').replace(/^Bearer\s+/i, ''));
-    const a = Buffer.from(want); const c = Buffer.from(got);
-    return a.length === c.length && crypto.timingSafeEqual(a, c);
+  // INC-012: el token ya no viaja en la URL. Se escribe una vez en un formulario (POST) y se abre una
+  // sesión de administración con una cookie firmada (HMAC con ADMIN_TOKEN), solo para /admin, 8 horas.
+  const ADMIN_COOKIE = 'ea_admin';
+  const ADMIN_SESSION_MS = 8 * 3600 * 1000;
+  const adminToken = () => { const t = process.env.ADMIN_TOKEN || ''; return t.length >= 16 ? t : ''; };
+  const safeEqual = (x: string, y: string) => { const a = Buffer.from(x); const b = Buffer.from(y); return a.length === b.length && crypto.timingSafeEqual(a, b); };
+  const sign = (exp: number) => crypto.createHmac('sha256', adminToken()).update(`eduamigo-admin|${exp}`).digest('hex');
+  const readCookie = (req: express.Request, name: string) => {
+    for (const part of String(req.headers.cookie || '').split(';')) {
+      const i = part.indexOf('=');
+      if (i > 0 && part.slice(0, i).trim() === name) { try { return decodeURIComponent(part.slice(i + 1).trim()); } catch { return ''; } }
+    }
+    return '';
   };
+  const adminSessionOk = (req: express.Request) => {
+    if (!adminToken()) return false;
+    const [expStr, mac] = readCookie(req, ADMIN_COOKIE).split('.');
+    const exp = Number(expStr);
+    return !!mac && Number.isFinite(exp) && exp > Date.now() && safeEqual(mac, sign(exp));
+  };
+  const isHttps = (req: express.Request) => req.secure || String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https';
+  const adminLoginLimiter = createLimiter(10, 15 * 60 * 1000);
+  const adminHead = '<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>EduAmigo · Avisos de errores</title>';
+  const noStore = (res: express.Response) => { res.setHeader('Cache-Control', 'no-store'); res.setHeader('X-Robots-Tag', 'noindex'); };
+
+  app.post('/admin/login', (req, res) => {
+    if (!adminToken()) return res.status(404).send('Not found');
+    noStore(res);
+    const ip = String(req.ip || 'desconocida');
+    const wait = adminLoginLimiter.blockedFor(ip);
+    if (wait) return res.status(429).type('html').send(`${adminHead}</head><body><p>Demasiados intentos. Espera ${Math.ceil(wait / 60000)} min.</p></body></html>`);
+    if (!safeEqual(String((req.body || {}).token || ''), adminToken())) {
+      adminLoginLimiter.hit(ip);
+      return res.status(403).type('html').send(`${adminHead}</head><body><p>Token incorrecto. <a href="/admin/avisos">Volver</a></p></body></html>`);
+    }
+    adminLoginLimiter.reset(ip);
+    const exp = Date.now() + ADMIN_SESSION_MS;
+    res.cookie(ADMIN_COOKIE, `${exp}.${sign(exp)}`, { httpOnly: true, sameSite: 'strict', secure: isHttps(req), path: '/admin', maxAge: ADMIN_SESSION_MS });
+    res.redirect(303, '/admin/avisos');
+  });
+
+  app.post('/admin/logout', (req, res) => {
+    res.clearCookie(ADMIN_COOKIE, { path: '/admin' });
+    res.redirect(303, '/admin/avisos');
+  });
 
   app.get('/admin/avisos', async (req, res) => {
-    if (!tokenOk(req)) return res.status(404).send('Not found');
-    res.setHeader('Cache-Control', 'no-store');
-    res.setHeader('X-Robots-Tag', 'noindex');
+    if (!adminToken()) return res.status(404).send('Not found');
+    noStore(res);
+    if (!adminSessionOk(req)) {
+      return res.type('html').send(`${adminHead}<style>body{font-family:system-ui,sans-serif;margin:24px}input{padding:8px;width:320px}button{padding:8px 12px}</style></head>
+<body><h1>Avisos de errores</h1><form method="post" action="/admin/login"><label>Token de administración<br><input type="password" name="token" autocomplete="current-password" required></label> <button>Entrar</button></form></body></html>`);
+    }
     const fb = await all(db, "SELECT id, kind, reason, snapshot, from_parent, status, created_at FROM ai_feedback ORDER BY (status = 'new') DESC, created_at DESC LIMIT 200");
     const tr = await all(db, "SELECT r.id, r.reason, COALESCE(r.status, 'new') AS status, r.created_at, m.content FROM tutor_reports r JOIN tutor_messages m ON m.id = r.message_id WHERE m.hidden_from_parent = 0 ORDER BY (COALESCE(r.status, 'new') = 'new') DESC, r.created_at DESC LIMIT 200");
     const fmt = (t: any) => new Date(Number(t)).toLocaleString('es-ES', { timeZone: 'Europe/Madrid' });
-    const tok = encodeURIComponent(String(req.query.token || ''));
     const btn = (table: string, id: string, status: string) => status === 'new'
-      ? `<form method="post" action="/admin/avisos/revisado?token=${tok}"><input type="hidden" name="table" value="${table}"><input type="hidden" name="id" value="${esc(id)}"><button>Marcar revisado</button></form>`
+      ? `<form method="post" action="/admin/avisos/revisado"><input type="hidden" name="table" value="${table}"><input type="hidden" name="id" value="${esc(id)}"><button>Marcar revisado</button></form>`
       : '<span class="ok">Revisado</span>';
     const rows = [
       ...fb.map((r: any) => ({ at: Number(r.created_at), html: `<tr class="${r.status}"><td>${fmt(r.created_at)}</td><td>${esc(r.kind)}${Number(r.from_parent) ? ' (padres)' : ''}</td><td>${esc(r.reason || '—')}</td><td><pre>${esc(JSON.stringify(parse(r.snapshot, {}), null, 1)).slice(0, 4000)}</pre></td><td>${btn('ai_feedback', r.id, r.status)}</td></tr>` })),
       ...tr.map((r: any) => ({ at: Number(r.created_at), html: `<tr class="${r.status}"><td>${fmt(r.created_at)}</td><td>tutor</td><td>${esc(r.reason || '—')}</td><td><pre>${esc(String(r.content || '').slice(0, 4000))}</pre></td><td>${btn('tutor_reports', r.id, r.status)}</td></tr>` })),
     ].sort((a, b) => b.at - a.at).map((r) => r.html).join('');
     const pending = fb.filter((r: any) => r.status === 'new').length + tr.filter((r: any) => r.status === 'new').length;
-    res.type('html').send(`<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>EduAmigo · Avisos de errores</title>
+    res.type('html').send(`${adminHead}
 <style>body{font-family:system-ui,sans-serif;margin:24px;color:#0f172a}table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #e2e8f0;padding:8px;vertical-align:top;text-align:left;font-size:14px}pre{white-space:pre-wrap;max-width:640px;margin:0;font-size:12px}tr.new{background:#fffbeb}.ok{color:#16a34a}button{padding:6px 10px}</style></head>
-<body><h1>Avisos de errores de la IA</h1><p>${pending} sin revisar. Sin nombres ni datos de las familias.</p>
+<body><form method="post" action="/admin/logout" style="float:right"><button>Cerrar sesión</button></form><h1>Avisos de errores de la IA</h1><p>${pending} sin revisar. Sin nombres ni datos de las familias.</p>
 <table><thead><tr><th>Fecha</th><th>Tipo</th><th>Motivo</th><th>Lo que estaba mal</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="5">No hay avisos.</td></tr>'}</tbody></table></body></html>`);
   });
 
   app.post('/admin/avisos/revisado', async (req, res) => {
-    if (!tokenOk(req)) return res.status(404).send('Not found');
+    if (!adminToken()) return res.status(404).send('Not found');
+    if (!adminSessionOk(req)) return res.redirect(303, '/admin/avisos');
     const table = String((req.body || {}).table || '');
     const id = String((req.body || {}).id || '');
     if (table === 'ai_feedback') await db.prepare("UPDATE ai_feedback SET status = 'reviewed' WHERE id = ?").run(id);
     else if (table === 'tutor_reports') await db.prepare("UPDATE tutor_reports SET status = 'reviewed' WHERE id = ?").run(id);
-    res.redirect(303, `/admin/avisos?token=${encodeURIComponent(String(req.query.token || ''))}`);
+    res.redirect(303, '/admin/avisos');
   });
 }

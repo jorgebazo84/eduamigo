@@ -6,6 +6,7 @@
 // - Capa de protección para menores antes y después del modelo.
 // - Límite diario de preguntas por niño, historial en el servidor y vista de padres.
 // =============================================================================
+import { publicErrorMessage } from './errors';
 import crypto from 'crypto';
 import type express from 'express';
 import { isFpGrade } from '../shared/fpCatalog';
@@ -451,7 +452,7 @@ export async function registerTutorRoutes(app: express.Express, deps: TutorDeps)
 
       return res.status(400).json({ error: 'Acción no válida' });
     } catch (e: any) {
-      return res.status(400).json({ error: e?.message || 'Error' });
+      return res.status(400).json({ error: publicErrorMessage(e, 'api_tutor.php') });
     }
   });
 

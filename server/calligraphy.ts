@@ -5,6 +5,7 @@
 //   neutro, sin diagnósticos y con el aviso de que no tiene validez científica.
 //   Los padres pueden desactivarla para cada hijo.
 // - Puntos en el servidor: 15 si la nota es 7 o más, 5 si no; máximo 30 al día.
+import { publicErrorMessage } from './errors';
 import type express from 'express';
 import crypto from 'crypto';
 import { callClaudeJson, setMockHandler, VISION_MODEL, AiUnavailable } from './ai';
@@ -40,7 +41,7 @@ export async function initCalligraphyTables(db: Db) {
     );
     CREATE INDEX IF NOT EXISTS idx_calligraphy_records_child ON calligraphy_records (child_id, created_at);
   `);
-  try { await db.exec('ALTER TABLE children ADD COLUMN graphology_enabled INTEGER DEFAULT 1'); } catch { /* ya existe */ }
+  try { await db.exec('ALTER TABLE children ADD COLUMN graphology_enabled INTEGER DEFAULT 0'); } catch { /* ya existe */ }
 }
 
 const str = (x: any, n: number) => String(x ?? '').trim().slice(0, n);
@@ -89,9 +90,11 @@ export async function registerCalligraphyRoutes(app: express.Express, deps: Call
   const ownChild = (userId: string, childId: string) => db.prepare('SELECT id, name, grade, graphology_enabled FROM children WHERE id = ? AND parentId = ?').get(String(childId || ''), userId);
   const PARENT_ACTIONS = new Set(['parent_history', 'set_graphology']);
 
+  // El niño no recibe la nota numérica de su letra (INC-028): solo los comentarios. La nota la ven los padres.
+  const withoutScore = (a: any) => { const { score: _score, ...rest } = a || {}; return rest; };
   const forChild = (r: any) => {
     const a = JSON.parse(r.analysis);
-    return { id: r.id, score: Number(r.score), analysis: a, photoUrl: r.photo_id ? `api_photo.php?id=${r.photo_id}` : null, points: Number(r.points), at: Number(r.created_at) };
+    return { id: r.id, analysis: withoutScore(a), photoUrl: r.photo_id ? `api_photo.php?id=${r.photo_id}` : null, points: Number(r.points), at: Number(r.created_at) };
   };
 
   app.post('/api_calligraphy.php', async (req, res) => {
@@ -113,8 +116,8 @@ export async function registerCalligraphyRoutes(app: express.Express, deps: Call
         if (used >= ANALYSES_PER_DAY) return res.status(429).json({ error: `Hoy ya has analizado ${ANALYSES_PER_DAY} fotos. ¡Mañana más!`, code: 'DAILY_LIMIT' });
         let photo;
         try { photo = await savePhoto(db, { userId, childId: child.id, kind: 'calligraphy', image: String(b.image || ''), thumb: b.thumb }); }
-        catch (e: any) { return res.status(400).json({ error: e.message }); }
-        const wantGraphology = Number(child.graphology_enabled ?? 1) === 1;
+        catch (e: any) { return res.status(400).json({ error: publicErrorMessage(e, 'api_calligraphy.php') }); }
+        const wantGraphology = Number(child.graphology_enabled ?? 0) === 1;
         let raw: any;
         try {
           const { data } = await callClaudeJson({
@@ -152,8 +155,8 @@ ${wantGraphology ? 'La grafología es solo para los padres. Normas: nada de diag
         await db.prepare('INSERT INTO calligraphy_records (id, user_id, child_id, photo_id, score, analysis, graphology, points, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
           .run(id, userId, child.id, photo.id, analysis.score, JSON.stringify(analysis), graphology ? JSON.stringify(graphology) : null, pts, Date.now());
         const award = await awardActivity(db, { userId, childId: child.id, points: pts, source: 'calligraphy', label: 'Práctica de caligrafía', refId: id });
-        // El niño nunca recibe la grafología
-        return res.json({ id, analysis, photoUrl: `api_photo.php?id=${photo.id}`, points: award.awarded, newPoints: award.newPoints });
+        // El niño nunca recibe la grafología ni la nota numérica
+        return res.json({ id, analysis: withoutScore(analysis), photoUrl: `api_photo.php?id=${photo.id}`, points: award.awarded, newPoints: award.newPoints });
       }
 
       if (action === 'history') {
@@ -164,8 +167,9 @@ ${wantGraphology ? 'La grafología es solo para los padres. Normas: nada de diag
       if (action === 'parent_history') {
         const rows = await db.prepare('SELECT * FROM calligraphy_records WHERE child_id = ? ORDER BY created_at DESC LIMIT 50').all(child.id);
         return res.json({
-          graphologyEnabled: Number(child.graphology_enabled ?? 1) === 1, notice: GRAPHOLOGY_NOTICE,
-          records: rows.map((r: any) => ({ ...forChild(r), graphology: r.graphology ? JSON.parse(r.graphology) : null })),
+          graphologyEnabled: Number(child.graphology_enabled ?? 0) === 1, notice: GRAPHOLOGY_NOTICE,
+          // Los padres sí ven la nota numérica
+          records: rows.map((r: any) => ({ ...forChild(r), score: Number(r.score), analysis: JSON.parse(r.analysis), graphology: r.graphology ? JSON.parse(r.graphology) : null })),
         });
       }
 

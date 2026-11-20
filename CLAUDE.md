@@ -32,7 +32,7 @@ Las reglas comunes de la cartera (autorización, estados PASS/FAIL, registros, a
 | `docs/equipo/REGISTRO_CAMBIOS.md` | Cambios aplicados |
 
 ## 4. Estado actual (19/11/2026)
-- Hay **23 incidencias registradas** (INC-001 a INC-023): 14 abiertas, 4 de ellas de gravedad Alta (INC-001 con la fase 1 hecha, INC-003 ya mitigada), 3 verificadas pendientes de cierre (INC-008, e INC-007 e INC-014, que esperan al primer despliegue en Render) y 6 cerradas (INC-002, INC-004, INC-005, INC-006, INC-022 e INC-023). Ver el registro.
+- Hay **34 incidencias registradas** (INC-001 a INC-034): 21 abiertas, 7 de ellas de gravedad Alta (INC-001 con la fase 1 hecha, INC-003 ya mitigada, INC-015, INC-024 con trabajo aparcado en la copia aislada, e INC-025 a INC-027) y 13 cerradas (INC-002, INC-004 a INC-008, INC-012, INC-013, INC-014, INC-022, INC-023, INC-028 e INC-034). Ver el registro.
 - Al arrancar se limpian solos los datos de perfiles borrados (`[BORRADO]` en el log). No actúa si `children` está vacía ni si hay más de 20 perfiles huérfanos (`ORPHAN_PURGE_MAX_CHILDREN`).
 - Línea base (copia aislada): `tsc` PASS, build PASS, `npm audit` con 1 vulnerabilidad baja aceptada y scripts de prueba de la API en PASS (ver `PRUEBAS_Y_VERIFICACION.md`). No hay pruebas automatizadas en el proyecto.
 - Instalar dependencias siempre con `npm ci`, nunca con `npm install`.

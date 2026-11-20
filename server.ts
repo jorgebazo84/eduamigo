@@ -25,6 +25,7 @@ import { storageMode } from './server/storage';
 import { deleteChildData, purgeOrphanChildData } from './server/childData';
 import { createLimiter, rateLimitMessage } from './server/rateLimit';
 import { securityHeaders, rejectCrossSiteWrites, readOnlyByGet } from './server/securityHeaders';
+import { publicErrorMessage } from './server/errors';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -331,7 +332,8 @@ async function startServer() {
     const out: Record<string, string> = {};
     (header || '').split(';').forEach(part => {
       const i = part.indexOf('=');
-      if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+      // Una cookie mal formada (p. ej. un % suelto) se ignora en vez de romper la petición (INC-013)
+      if (i > 0) { try { out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim()); } catch { /* se ignora */ } }
     });
     return out;
   };
@@ -566,8 +568,7 @@ async function startServer() {
         res.status(400).json({ error: 'Acción no válida' });
       }
     } catch (e: any) {
-      console.error('[AUTH] Error:', e?.message);
-      res.status(400).json({ error: e.message });
+      res.status(400).json({ error: publicErrorMessage(e, 'auth.php') });
     }
   });
 
@@ -625,6 +626,8 @@ async function startServer() {
         if (!isValidGrade(String(data.grade || ''))) throw new Error('Curso no válido');
         await db.prepare('INSERT INTO children (id, parentId, name, avatar, points, grade, country, streak_current, streak_last_active, streak_multiplier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
           .run(data.id, userId, data.name, data.avatar, 0, data.grade, data.country || 'España', 0, 0, 1);
+        // La grafología empieza desactivada (INC-028); los padres pueden activarla en su panel
+        try { await db.prepare('UPDATE children SET graphology_enabled = 0 WHERE id = ? AND parentId = ?').run(data.id, userId); } catch { /* columna aún no creada */ }
         res.json({ status: 'success' });
       } else if (action === 'update_child') {
         if (!id) throw new Error('id es obligatorio');
@@ -682,8 +685,7 @@ async function startServer() {
         res.status(400).json({ error: 'Acción no válida' });
       }
     } catch (e: any) {
-      console.error('API Error:', e);
-      res.status(400).json({ error: e.message });
+      res.status(400).json({ error: publicErrorMessage(e, 'api.php') });
     }
   });
 
@@ -753,7 +755,7 @@ async function startServer() {
         res.status(400).json({ error: 'Acción no válida' });
       }
     } catch (e: any) {
-      res.status(400).json({ error: e.message });
+      res.status(400).json({ error: publicErrorMessage(e, 'api_study.php') });
     }
   });
 
