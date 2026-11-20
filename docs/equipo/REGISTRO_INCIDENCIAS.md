@@ -255,6 +255,14 @@ Este registro recoge solo incidencias de este proyecto. Si algo afecta a otro pr
     - versionar la configuración (`render.yaml`);
     - endpoint `/health`.
   - **Revisión independiente** de `arquitecto-software`: APROBADA CON OBSERVACIONES.
+- **Seguimiento (20/11/2026): primer despliegue real en Render** [ejecutado, log de Render facilitado por el usuario]
+  - **Intentos 1 y 2**: `[ARRANQUE] Faltan TURSO_DATABASE_URL y/o TURSO_AUTH_TOKEN` → `Exited with status 1`. La protección de CAM-007 funciona.
+  - **Intento 3**, con las variables ya puestas: `tsx server.ts --prod` y ninguna línea más, hasta `Port scan timeout reached, no open ports detected`. La app se quedó colgada en la primera conexión con Turso, que no tenía límite de tiempo.
+  - **Despliegue que sigue activo**, el anterior a CAM-007 (`tsx server.ts`): `[DB] Base de datos: SQLite local (eduamigo.db)`, fotos en disco y `[COPIA] … 51 tablas, 0 filas`.
+    - Queda **confirmado en producción**: la app nunca había usado Turso, la base de datos está vacía y los datos se perdían en cada despliegue.
+    - No hay datos de familias en riesgo.
+  - **Corregido** en CAM-013: la primera conexión con la base de datos escribe `[DB] Conectando con Turso (host)…` y tiene un límite de 15 s; si no responde, la app se detiene con un mensaje `[ARRANQUE]`.
+  - **Pendiente**: averiguar por qué Turso no responde desde Render (credenciales, base de datos archivada…) y repetir el despliegue.
 
 ## INC-015 — Esquema sin migraciones, sin claves foráneas y sin índices base
 - **Gravedad**: Alta · **Estado**: Abierta · **Área**: base de datos / arquitectura

@@ -22,6 +22,28 @@ Aquí se anota cada cambio autorizado y aplicado en este proyecto, del más reci
 
 ## Cambios
 
+### CAM-013 — Aviso y límite de tiempo en la primera conexión con la base de datos (INC-014)
+- **Fecha**: 2026-11-20
+- **Incidencia(s)**: INC-014 (seguimiento del primer despliegue real en Render)
+- **Autorización**: el 20/11/2026 el usuario respondió «Sí, aplícalo» a la propuesta de añadir un aviso y un límite de 15 s a la conexión con Turso.
+- **Agente(s)**: implementó el director de proyecto. Sin revisión independiente: es un cambio pequeño de arranque y diagnóstico, sin efecto en la seguridad ni en los datos.
+- **Archivos modificados**:
+  - `server/db.ts`:
+    - antes de conectar con Turso escribe `[DB] Conectando con Turso (<host>)…`; solo el host, nunca el token;
+    - la primera consulta (`SELECT 1`) compite con un temporizador de 15 s (configurable con `DB_CONNECT_TIMEOUT_MS`). Si vence, lanza `[ARRANQUE] La base de datos no responde en 15 s. Revisa TURSO_DATABASE_URL y TURSO_AUTH_TOKEN, y que la base de datos esté activa (no archivada) en el panel de Turso.`
+  - `server.ts`: si no se puede abrir la base de datos, el mensaje sale con el prefijo `[ARRANQUE]` antes de `exit(1)`.
+- **Motivo**: en Render, la app se quedaba colgada conectando con Turso sin escribir nada; Render solo decía «no open ports detected».
+- **Riesgos identificados**: si Turso tarda más de 15 s en una conexión legítima, el arranque falla y Render lo reintenta. El tiempo se puede subir con `DB_CONNECT_TIMEOUT_MS`.
+- **Pruebas realizadas** (copia aislada; Turso simulado con un servidor local que acepta conexiones y nunca responde, `turso_colgado.mjs`; `RENDER=true` con variables ficticias):
+  - **Código original**: ninguna línea en el log; cortado a los 45 s y seguía colgado (código 124). Reproduce el comportamiento de Render.
+  - **Código corregido**:
+    - escribe `[DB] Conectando con Turso (127.0.0.1:3998)…` y luego `[ARRANQUE] La base de datos no responde en 15 s…`, con código de salida 1 a los 20 s (contando el arranque de `tsx`);
+    - con un host inexistente: `[ARRANQUE] No se ha podido abrir la base de datos: fetch failed`, al momento.
+  - **Regresión**: `inc014.sh` (A–F) y `inc002.sh` (10/10, 1/1, 4/4), PASS. `tsc`: salida 0. Build: «✓ built in 4.85s».
+  - Archivos del proyecto idénticos a los de la copia probada. Simulador y servidores parados.
+- **Cómo revertir**: restaurar `server.ts` y `server/db.ts` desde `scratchpad/respaldo/antes-CAM-013/`.
+- **Estado**: Aplicado. No se ha hecho commit.
+
 ### CAM-012 — Protección CSRF: sin escrituras por GET y rechazo de escrituras de otra web (INC-008)
 - **Fecha**: 2026-11-19
 - **Incidencia(s)**: INC-008. También quita a CAM-009 (borrado irreversible de perfiles) el agravante señalado por la revisión de seguridad.

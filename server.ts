@@ -65,7 +65,8 @@ async function startServer() {
   try {
     db = await openDatabase();
   } catch (err) {
-    console.error('[DB] No se ha podido abrir la base de datos:', err);
+    const msg = String((err as any)?.message || err);
+    console.error(msg.startsWith('[ARRANQUE]') ? msg : `[ARRANQUE] No se ha podido abrir la base de datos: ${msg}`);
     process.exit(1);
   }
 

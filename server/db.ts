@@ -41,7 +41,27 @@ export async function openDatabase(): Promise<Db> {
   const url = remoteUrl || `file:${process.env.DB_FILE || 'eduamigo.db'}`;
   const client = createClient(remoteUrl ? { url, authToken: process.env.TURSO_AUTH_TOKEN } : { url });
 
-  await client.execute('SELECT 1');
+  // Primera conexión con límite de tiempo: si Turso no responde, el arranque falla con un motivo claro
+  // en vez de quedarse esperando sin abrir el puerto. Solo se muestra el host, nunca el token.
+  if (kind === 'turso') {
+    let host = '?';
+    try { host = new URL(url).host; } catch { /* URL no válida: la conexión dará su propio error */ }
+    console.log(`[DB] Conectando con Turso (${host})…`);
+  }
+  const timeoutMs = Number(process.env.DB_CONNECT_TIMEOUT_MS) > 0 ? Number(process.env.DB_CONNECT_TIMEOUT_MS) : 15000;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      client.execute('SELECT 1'),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(
+          `[ARRANQUE] La base de datos no responde en ${Math.round(timeoutMs / 1000)} s. Revisa TURSO_DATABASE_URL y TURSO_AUTH_TOKEN, y que la base de datos esté activa (no archivada) en el panel de Turso.`,
+        )), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
   if (kind === 'local') {
     // Varias peticiones a la vez sobre el mismo archivo: esperar en vez de fallar
     await client.execute('PRAGMA busy_timeout = 5000');
